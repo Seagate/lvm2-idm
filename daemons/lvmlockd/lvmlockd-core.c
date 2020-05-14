@@ -502,10 +502,21 @@ static struct lock *alloc_lock(void)
 
 static void free_action(struct action *act)
 {
+	int i;
+
 	if (act->path) {
 		free(act->path);
 		act->path = NULL;
 	}
+
+	for (i = 0; i < 32; i++) {
+		if (!act->pvs_path[i])
+			continue;
+
+		free(act->pvs_path[i]);
+		act->pvs_path[i] = NULL;
+	}
+
 	pthread_mutex_lock(&unused_struct_mutex);
 	if (unused_action_count >= MAX_UNUSED_ACTION) {
 		free(act);
@@ -560,9 +571,13 @@ static int setup_structs(void)
 	struct lock *lk;
 	int data_san = lm_data_size_sanlock();
 	int data_dlm = lm_data_size_dlm();
+	int data_idm = lm_data_size_idm();
+	int data_size;
 	int i;
 
-	resource_lm_data_size = data_san > data_dlm ? data_san : data_dlm;
+	data_size = data_san > data_dlm ? data_san : data_dlm;
+	data_size = data_size > data_idm ? data_size : data_idm;
+	resource_lm_data_size = data_size;
 
 	pthread_mutex_init(&unused_struct_mutex, NULL);
 	INIT_LIST_HEAD(&unused_action);
@@ -679,6 +694,8 @@ static const char *lm_str(int x)
 		return "dlm";
 	case LD_LM_SANLOCK:
 		return "sanlock";
+	case LD_LM_IDM:
+		return "idm";
 	default:
 		return "lm_unknown";
 	}
@@ -824,6 +841,8 @@ static int lm_prepare_lockspace(struct lockspace *ls, struct action *act)
 		rv = lm_prepare_lockspace_dlm(ls);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_prepare_lockspace_sanlock(ls);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_prepare_lockspace_idm(ls);
 	else
 		return -1;
 
@@ -840,6 +859,8 @@ static int lm_add_lockspace(struct lockspace *ls, struct action *act, int adopt)
 		rv = lm_add_lockspace_dlm(ls, adopt);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_add_lockspace_sanlock(ls, adopt);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_add_lockspace_idm(ls, adopt);
 	else
 		return -1;
 
@@ -856,6 +877,8 @@ static int lm_rem_lockspace(struct lockspace *ls, struct action *act, int free_v
 		rv = lm_rem_lockspace_dlm(ls, free_vg);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_rem_lockspace_sanlock(ls, free_vg);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_rem_lockspace_idm(ls, free_vg);
 	else
 		return -1;
 
@@ -873,6 +896,9 @@ static int lm_lock(struct lockspace *ls, struct resource *r, int mode, struct ac
 		rv = lm_lock_dlm(ls, r, mode, vb_out, adopt);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_lock_sanlock(ls, r, mode, vb_out, retry, adopt);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_lock_idm(ls, r, mode, vb_out, act->lv_uuid,
+				 act->pvs_path, adopt);
 	else
 		return -1;
 
@@ -890,6 +916,8 @@ static int lm_convert(struct lockspace *ls, struct resource *r,
 		rv = lm_convert_dlm(ls, r, mode, r_version);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_convert_sanlock(ls, r, mode, r_version);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_convert_idm(ls, r, mode, r_version);
 	else
 		return -1;
 
@@ -907,6 +935,8 @@ static int lm_unlock(struct lockspace *ls, struct resource *r, struct action *ac
 		rv = lm_unlock_dlm(ls, r, r_version, lmu_flags);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		rv = lm_unlock_sanlock(ls, r, r_version, lmu_flags);
+	else if (ls->lm_type == LD_LM_IDM)
+		rv = lm_unlock_idm(ls, r, r_version, lmu_flags);
 	else
 		return -1;
 
@@ -921,6 +951,8 @@ static int lm_hosts(struct lockspace *ls, int notify)
 		return lm_hosts_dlm(ls, notify);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		return lm_hosts_sanlock(ls, notify);
+	else if (ls->lm_type == LD_LM_IDM)
+		return lm_hosts_idm(ls, notify);
 	return -1;
 }
 
@@ -930,6 +962,8 @@ static void lm_rem_resource(struct lockspace *ls, struct resource *r)
 		lm_rem_resource_dlm(ls, r);
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		lm_rem_resource_sanlock(ls, r);
+	else if (ls->lm_type == LD_LM_IDM)
+		lm_rem_resource_idm(ls, r);
 }
 
 static int lm_find_free_lock(struct lockspace *ls, uint64_t *free_offset, int *sector_size, int *align_size)
@@ -938,6 +972,8 @@ static int lm_find_free_lock(struct lockspace *ls, uint64_t *free_offset, int *s
 		return 0;
 	else if (ls->lm_type == LD_LM_SANLOCK)
 		return lm_find_free_lock_sanlock(ls, free_offset, sector_size, align_size);
+	else if (ls->lm_type == LD_LM_IDM)
+		return 0;
 	return -1;
 }
 
@@ -1555,6 +1591,8 @@ static int free_lv(struct lockspace *ls, struct resource *r)
 	if (ls->lm_type == LD_LM_SANLOCK)
 		return lm_free_lv_sanlock(ls, r);
 	else if (ls->lm_type == LD_LM_DLM)
+		return 0;
+	else if (ls->lm_type == LD_LM_IDM)
 		return 0;
 	else
 		return -EINVAL;
@@ -2707,6 +2745,8 @@ static void gl_ls_name(char *ls_name)
 		memcpy(ls_name, gl_lsname_dlm, MAX_NAME);
 	else if (gl_use_sanlock)
 		memcpy(ls_name, gl_lsname_sanlock, MAX_NAME);
+	else if (gl_use_idm)
+		memcpy(ls_name, gl_lsname_idm, MAX_NAME);
 	else
 		memset(ls_name, 0, MAX_NAME);
 }
@@ -2724,7 +2764,7 @@ static int add_lockspace_thread(const char *ls_name,
 {
 	struct lockspace *ls, *ls2;
 	struct resource *r;
-	int rv;
+	int rv, i;
 
 	log_debug("add_lockspace_thread %s %s version %u",
 		  lm_str(lm_type), ls_name, act ? act->version : 0);
@@ -2747,8 +2787,17 @@ static int add_lockspace_thread(const char *ls_name,
 	if (vg_args)
 		strncpy(ls->vg_args, vg_args, MAX_ARGS);
 
-	if (act)
+	if (act) {
 		ls->host_id = act->host_id;
+
+		for (i = 0; i < 32; i++) {
+			if (!act->pvs_path[i])
+				continue;
+
+			ls->pvs_path[i] = strdup(act->pvs_path[i]);
+			log_debug("ls path[%d]=%s", i, ls->pvs_path[i]);
+		}
+	}
 
 	if (!(r = alloc_resource())) {
 		free(ls);
@@ -2789,6 +2838,8 @@ static int add_lockspace_thread(const char *ls_name,
 
 	if (ls->lm_type == LD_LM_DLM && !strcmp(ls->name, gl_lsname_dlm))
 		global_dlm_lockspace_exists = 1;
+	if (ls->lm_type == LD_LM_IDM && !strcmp(ls->name, gl_lsname_idm))
+		global_idm_lockspace_exists = 1;
 	list_add_tail(&ls->list, &lockspaces);
 	pthread_mutex_unlock(&lockspaces_mutex);
 
@@ -2884,6 +2935,26 @@ out:
 	return rv;
 }
 
+static int add_idm_global_lockspace(struct action *act)
+{
+	int rv;
+
+	if (global_idm_lockspace_exists)
+		return 0;
+
+	rv = add_lockspace_thread(gl_lsname_idm, NULL, NULL, LD_LM_IDM,
+				  NULL, act);
+	if (rv < 0)
+		log_debug("%s: add_lockspace_thread %d", __func__, rv);
+
+	return rv;
+}
+
+static int rem_idm_global_lockspace(void)
+{
+	return rem_dlm_global_lockspace();
+}
+
 /*
  * When the first dlm lockspace is added for a vg, automatically add a separate
  * dlm lockspace for the global lock.
@@ -2909,6 +2980,9 @@ static int add_lockspace(struct action *act)
 		if (gl_use_dlm) {
 			rv = add_dlm_global_lockspace(act);
 			return rv;
+		} else if (gl_use_idm) {
+			rv = add_idm_global_lockspace(act);
+			return rv;
 		} else {
 			return -EINVAL;
 		}
@@ -2917,6 +2991,8 @@ static int add_lockspace(struct action *act)
 	if (act->rt == LD_RT_VG) {
 		if (gl_use_dlm)
 			add_dlm_global_lockspace(NULL);
+		else if (gl_use_idm)
+			add_idm_global_lockspace(NULL);
 
 		vg_ls_name(act->vg_name, ls_name);
 
@@ -2992,6 +3068,9 @@ static int rem_lockspace(struct action *act)
 
 	if (rt == LD_RT_VG && gl_use_dlm)
 		rem_dlm_global_lockspace();
+
+	if (rt == LD_RT_VG && gl_use_idm)
+		rem_idm_global_lockspace();
 
 	return 0;
 }
@@ -3128,6 +3207,7 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 		if (!gl_type_static) {
 			gl_use_dlm = 0;
 			gl_use_sanlock = 0;
+			gl_use_idm = 0;
 		}
 	}
 	pthread_mutex_unlock(&lockspaces_mutex);
@@ -3203,6 +3283,9 @@ static int work_init_vg(struct action *act)
 		rv = lm_init_vg_sanlock(ls_name, act->vg_name, act->flags, act->vg_args);
 	else if (act->lm_type == LD_LM_DLM)
 		rv = lm_init_vg_dlm(ls_name, act->vg_name, act->flags, act->vg_args);
+	else if (act->lm_type == LD_LM_IDM)
+		/* Do nothing for IDM */
+		rv = 0;
 	else
 		rv = -EINVAL;
 
@@ -3306,6 +3389,8 @@ static int work_init_lv(struct action *act)
 
 	} else if (act->lm_type == LD_LM_DLM) {
 		return 0;
+	} else if (act->lm_type == LD_LM_IDM) {
+		return 0;
 	} else {
 		log_error("init_lv ls_name %s bad lm_type %d", ls_name, act->lm_type);
 		return -EINVAL;
@@ -3369,18 +3454,25 @@ static void *worker_thread_main(void *arg_in)
 		if (act->op == LD_OP_RUNNING_LM) {
 			int run_sanlock = lm_is_running_sanlock();
 			int run_dlm = lm_is_running_dlm();
+			int run_idm = lm_is_running_idm();
 
 			if (daemon_test) {
 				run_sanlock = gl_use_sanlock;
 				run_dlm = gl_use_dlm;
+				run_idm = gl_use_idm;
 			}
 
-			if (run_sanlock && run_dlm)
+			log_error("%s: run_sanlock=%d run_dlm=%d run_idm=%d", 
+				  __func__, run_sanlock, run_dlm, run_idm);
+
+			if (run_sanlock && (run_dlm || run_idm))
 				act->result = -EXFULL;
-			else if (!run_sanlock && !run_dlm)
+			else if (!run_sanlock && !run_dlm && !run_idm)
 				act->result = -ENOLCK;
 			else if (run_sanlock)
 				act->result = LD_LM_SANLOCK;
+			else if (run_idm)
+				act->result = LD_LM_IDM;
 			else if (run_dlm)
 				act->result = LD_LM_DLM;
 			add_client_result(act);
@@ -3670,12 +3762,17 @@ static int client_send_result(struct client *cl, struct action *act)
 		} else if (gl_use_dlm) {
 			if (!gl_lsname_dlm[0])
 				strcat(result_flags, "NO_GL_LS,");
+		} else if (gl_use_idm) {
+			if (!gl_lsname_idm[0])
+				strcat(result_flags, "NO_GL_LS,");
 		} else {
 			int found_lm = 0;
 
 			if (lm_support_dlm() && lm_is_running_dlm())
 				found_lm++;
 			if (lm_support_sanlock() && lm_is_running_sanlock())
+				found_lm++;
+			if (lm_support_idm() && lm_is_running_idm())
 				found_lm++;
 
 			if (!found_lm)
@@ -3852,11 +3949,13 @@ static int add_lock_action(struct action *act)
 		if (gl_use_sanlock && (act->op == LD_OP_ENABLE || act->op == LD_OP_DISABLE)) {
 			vg_ls_name(act->vg_name, ls_name);
 		} else {
-			if (!gl_use_dlm && !gl_use_sanlock) {
+			if (!gl_use_dlm && !gl_use_sanlock && !gl_use_idm) {
 				if (lm_is_running_dlm())
 					gl_use_dlm = 1;
 				else if (lm_is_running_sanlock())
 					gl_use_sanlock = 1;
+				else if (lm_is_running_idm())
+					gl_use_idm = 1;
 			}
 			gl_ls_name(ls_name);
 		}
@@ -3902,6 +4001,17 @@ static int add_lock_action(struct action *act)
 			act->flags |= LD_AF_SEARCH_LS;
 			act->flags |= LD_AF_WAIT_STARTING;
 			add_dlm_global_lockspace(NULL);
+			goto retry;
+
+		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_GL && act->mode != LD_LK_UN && gl_use_idm) {
+			/*
+			 * Automatically start the dlm global lockspace when
+			 * a command tries to acquire the global lock.
+			 */
+			log_debug("lockspace \"%s\" not found for idm gl, adding...", ls_name);
+			act->flags |= LD_AF_SEARCH_LS;
+			act->flags |= LD_AF_WAIT_STARTING;
+			add_idm_global_lockspace(NULL);
 			goto retry;
 
 		} else if (act->op == LD_OP_LOCK && act->mode == LD_LK_UN) {
@@ -4124,6 +4234,8 @@ static int str_to_lm(const char *str)
 		return LD_LM_SANLOCK;
 	if (!strcmp(str, "dlm"))
 		return LD_LM_DLM;
+	if (!strcmp(str, "idm"))
+		return LD_LM_IDM;
 	return -2; 
 }
 
@@ -4459,12 +4571,14 @@ static void client_recv_action(struct client *cl)
 	const char *vg_sysid;
 	const char *path;
 	const char *str;
+	const char *pvs_path[32];
+	char buf[10];
 	int64_t val;
 	uint32_t opts = 0;
 	int result = 0;
 	int cl_pid;
 	int op, rt, lm, mode;
-	int rv;
+	int rv, i;
 
 	buffer_init(&req.buffer);
 
@@ -4546,6 +4660,13 @@ static void client_recv_action(struct client *cl)
 	lm = str_to_lm(str);
 	path = daemon_request_str(req, "path", NULL);
 
+	memset(pvs_path, 0x0, sizeof(pvs_path));
+
+	for (i = 0; i < 32; i++) {
+		sprintf(buf, "path[%d]", i);
+		pvs_path[i] = daemon_request_str(req, buf, NULL);
+	}
+
 	if (cl_pid && cl_pid != cl->pid)
 		log_error("client recv bad message pid %d client %d", cl_pid, cl->pid);
 
@@ -4553,8 +4674,10 @@ static void client_recv_action(struct client *cl)
 	if (!cl->name[0] && cl_name)
 		strncpy(cl->name, cl_name, MAX_NAME);
 
-	if (!gl_use_dlm && !gl_use_sanlock && (lm > 0)) {
-		if (lm == LD_LM_DLM && lm_support_dlm())
+	if (!gl_use_dlm && !gl_use_sanlock && !gl_use_idm && (lm > 0)) {
+		if (lm == LD_LM_IDM && lm_support_idm())
+			gl_use_idm = 1;
+		else if (lm == LD_LM_DLM && lm_support_dlm())
 			gl_use_dlm = 1;
 		else if (lm == LD_LM_SANLOCK && lm_support_sanlock())
 			gl_use_sanlock = 1;
@@ -4579,6 +4702,15 @@ static void client_recv_action(struct client *cl)
 
 	if (path)
 		act->path = strdup(path);
+
+	for (i = 0; i < 32; i++) {
+		if (!pvs_path[i] || !strcmp(pvs_path[i], "none"))
+			continue;
+
+		act->pvs_path[i] = strdup(pvs_path[i]);
+
+		log_debug("pvs_path[%d] = %s", i, act->pvs_path[i]);
+	}
 
 	if (vg_name && strcmp(vg_name, "none"))
 		strncpy(act->vg_name, vg_name, MAX_NAME);
@@ -4630,6 +4762,12 @@ static void client_recv_action(struct client *cl)
 	}
 
 	if (lm == LD_LM_SANLOCK && !lm_support_sanlock()) {
+		log_debug("sanlock not supported");
+		rv = -EPROTONOSUPPORT;
+		goto out;
+	}
+
+	if (lm == LD_LM_IDM && !lm_support_idm()) {
 		log_debug("sanlock not supported");
 		rv = -EPROTONOSUPPORT;
 		goto out;
@@ -5866,6 +6004,7 @@ static int main_loop(daemon_state *ds_arg)
 	}
 
 	strcpy(gl_lsname_dlm, S_NAME_GL_DLM);
+	strcpy(gl_lsname_idm, S_NAME_GL_DLM);
 
 	INIT_LIST_HEAD(&lockspaces);
 	pthread_mutex_init(&lockspaces_mutex, NULL);
@@ -6113,6 +6252,8 @@ int main(int argc, char *argv[])
 				gl_use_dlm = 1;
 			else if (lm == LD_LM_SANLOCK && lm_support_sanlock())
 				gl_use_sanlock = 1;
+			else if (lm == LD_LM_IDM && lm_support_idm())
+				gl_use_idm = 1;
 			else {
 				fprintf(stderr, "invalid gl-type option\n");
 				exit(EXIT_FAILURE);

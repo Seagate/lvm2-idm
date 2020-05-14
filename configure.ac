@@ -43,6 +43,7 @@ case "$host_os" in
 		LOCKDSANLOCK=no
 		LOCKDDLM=no
 		LOCKDDLM_CONTROL=no
+		LOCKDIDM=no
 		ODIRECT=yes
 		DM_IOCTLS=yes
 		SELINUX=yes
@@ -915,6 +916,24 @@ dnl -- Look for sanlock libraries
 if test "$BUILD_LOCKDSANLOCK" = yes; then
 	PKG_CHECK_MODULES(LOCKD_SANLOCK, libsanlock_client >= 3.3.0, [HAVE_LOCKD_SANLOCK=yes], $bailout)
 	AC_DEFINE([LOCKDSANLOCK_SUPPORT], 1, [Define to 1 to include code that uses lvmlockd sanlock option.])
+	BUILD_LVMLOCKD=yes
+fi
+
+################################################################################
+dnl -- Build lvmlockdidm
+AC_MSG_CHECKING(whether to build lvmlockdidm)
+AC_ARG_ENABLE(lvmlockd-idm,
+	      AC_HELP_STRING([--enable-lvmlockd-idm],
+			     [enable the LVM lock daemon using idm]),
+	      LOCKDSANLOCK=$enableval)
+AC_MSG_RESULT($LOCKDIDM)
+
+BUILD_LOCKDSANLOCK=$LOCKDIDM
+
+dnl -- Look for Seagate IDM libraries
+if test "$BUILD_LOCKDIDM" = yes; then
+	PKG_CHECK_MODULES(LOCKD_IDM, liblibseagate_ilm >= 0.1.0, [HAVE_LOCKD_IDM=yes], $bailout)
+	AC_DEFINE([LOCKDIDM_SUPPORT], 1, [Define to 1 to include code that uses lvmlockd IDM option.])
 	BUILD_LVMLOCKD=yes
 fi
 
