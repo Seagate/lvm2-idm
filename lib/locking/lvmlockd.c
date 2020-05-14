@@ -18,6 +18,16 @@
 #include "lvmcache.h"
 #include "lvmlockd-client.h"
 
+/*
+ * Support for maximum 32 PVs for IDM locking scheme
+ */
+#define LVMLOCKD_PV_MAX_NUM		32
+
+struct lvmlockd_pvs {
+	char *path[LVMLOCKD_PV_MAX_NUM];
+	int path_num;
+};
+
 static daemon_handle _lvmlockd;
 static const char *_lvmlockd_socket = NULL;
 static int _use_lvmlockd = 0;         /* is 1 if command is configured to use lvmlockd */
@@ -193,6 +203,183 @@ static daemon_reply _lockd_send(const char *req_name, ...)
 	return repl;
 }
 
+static void _retrive_vg_pv_list(struct volume_group *vg,
+				struct lvmlockd_pvs *lock_pvs)
+{
+	struct pv_list *pvl;
+	struct physical_volume *pv;
+	int i;
+
+	i = 0;
+	dm_list_iterate_items(pvl, &vg->pvs) {
+
+		/* Check if out of boundary */
+		if (i >= LVMLOCKD_PV_MAX_NUM)
+			break;
+
+	        pv = pvl->pv;
+		lock_pvs->path[i] = strdup(pv_dev_name(pv));
+		i++;
+	}
+
+	lock_pvs->path_num = i;
+	return;
+}
+
+static void _retrive_lv_pv_list(struct volume_group *vg,
+				const char *lv_name,
+				struct lvmlockd_pvs *lock_pvs)
+{
+	struct pv_list *pvl;
+	struct physical_volume *pv;
+	const struct pv_segment *pvseg;
+	int i, found = 0;
+
+	i = 0;
+	//log_error("%s lv_name=%s", __func__, lv_name);
+	dm_list_iterate_items(pvl, &vg->pvs) {
+
+		/* Check if out of boundary */
+		if (i >= LVMLOCKD_PV_MAX_NUM)
+			break;
+
+		pv = pvl->pv;
+
+		found = 0;
+		dm_list_iterate_items(pvseg, &pv->segments) {
+
+			if (!pvseg || !pvseg->lvseg ||
+			    !pvseg->lvseg->lv || !pvseg->lvseg->lv->name)
+				continue;
+
+			if (!strcmp(lv_name, pvseg->lvseg->lv->name)) {
+				found = 1;
+				break;
+			}
+
+			/* Find out corresponding PVs for mirror volumes */
+			if (strstr(lv_name, "mirror") &&
+			    strstr(pvseg->lvseg->lv->name, lv_name)) {
+				found = 1;
+				break;
+			}
+
+			/* Find out corresponding PVs for cached volumes */
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_corig")) {
+				found = 1;
+				break;
+			}
+
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_cvol")) {
+				found = 1;
+				break;
+			}
+
+			/* Find out corresponding PVs for thin volumes */
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_tdata")) {
+				found = 1;
+				break;
+			}
+
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_tmeta")) {
+				found = 1;
+				break;
+			}
+
+			/* Find out corresponding PVs for raid volumes */
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_rmeta")) {
+				found = 1;
+				break;
+			}
+
+			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
+			    strstr(pvseg->lvseg->lv->name, "_rimage")) {
+				found = 1;
+				break;
+			}
+		}
+
+		if (found) {
+			lock_pvs->path[i] = strdup(pv_dev_name(pv));
+			i++;
+		}
+	}
+
+	lock_pvs->path_num = i;
+
+	/*
+	 * Fixup for 'lvcreate --type error -L1 -n $lv1 $vg', in this
+	 * case, the drive path list is empty since it doesn't establish
+	 * the structure 'pvseg->lvseg->lv->name'.
+	 *
+	 * So create drive path list with all drives in the VG.
+	 */
+	if (!lock_pvs->path_num) {
+
+		i = 0;
+		dm_list_iterate_items(pvl, &vg->pvs) {
+
+			/* Check if out of boundary */
+			if (i >= LVMLOCKD_PV_MAX_NUM)
+				break;
+
+			pv = pvl->pv;
+			lock_pvs->path[i] = strdup(pv_dev_name(pv));
+			i++;
+		}
+	}
+
+	return;
+}
+
+static void _free_pv_list(struct lvmlockd_pvs *lock_pvs)
+{
+	int i;
+
+	for (i = 0; i < lock_pvs->path_num; i++)
+		free(lock_pvs->path[i]);
+}
+
+#define SEND_PVS_MESSAGE(pvs) 						\
+	"path_num = " FMTd64, (int64_t)(pvs)->path_num,			\
+	"path[0]  = %s", (pvs)->path[0]  ? (pvs)->path[0]  : "none",	\
+	"path[1]  = %s", (pvs)->path[1]  ? (pvs)->path[1]  : "none",	\
+	"path[2]  = %s", (pvs)->path[2]  ? (pvs)->path[2]  : "none",	\
+	"path[3]  = %s", (pvs)->path[3]  ? (pvs)->path[3]  : "none",	\
+	"path[4]  = %s", (pvs)->path[4]  ? (pvs)->path[4]  : "none",	\
+	"path[5]  = %s", (pvs)->path[5]  ? (pvs)->path[5]  : "none",	\
+	"path[6]  = %s", (pvs)->path[6]  ? (pvs)->path[6]  : "none",	\
+	"path[7]  = %s", (pvs)->path[7]  ? (pvs)->path[7]  : "none",	\
+	"path[8]  = %s", (pvs)->path[8]  ? (pvs)->path[8]  : "none",	\
+	"path[9]  = %s", (pvs)->path[9]  ? (pvs)->path[9]  : "none",	\
+	"path[10] = %s", (pvs)->path[10] ? (pvs)->path[10] : "none",	\
+	"path[11] = %s", (pvs)->path[11] ? (pvs)->path[11] : "none",	\
+	"path[12] = %s", (pvs)->path[12] ? (pvs)->path[12] : "none",	\
+	"path[13] = %s", (pvs)->path[13] ? (pvs)->path[13] : "none",	\
+	"path[14] = %s", (pvs)->path[14] ? (pvs)->path[14] : "none",	\
+	"path[15] = %s", (pvs)->path[15] ? (pvs)->path[15] : "none",	\
+	"path[16] = %s", (pvs)->path[16] ? (pvs)->path[16] : "none",	\
+	"path[17] = %s", (pvs)->path[17] ? (pvs)->path[17] : "none",	\
+	"path[18] = %s", (pvs)->path[18] ? (pvs)->path[18] : "none",	\
+	"path[19] = %s", (pvs)->path[19] ? (pvs)->path[19] : "none",	\
+	"path[20] = %s", (pvs)->path[20] ? (pvs)->path[20] : "none",	\
+	"path[21] = %s", (pvs)->path[21] ? (pvs)->path[21] : "none",	\
+	"path[22] = %s", (pvs)->path[22] ? (pvs)->path[22] : "none",	\
+	"path[23] = %s", (pvs)->path[23] ? (pvs)->path[23] : "none",	\
+	"path[24] = %s", (pvs)->path[24] ? (pvs)->path[24] : "none",	\
+	"path[25] = %s", (pvs)->path[25] ? (pvs)->path[25] : "none",	\
+	"path[26] = %s", (pvs)->path[26] ? (pvs)->path[26] : "none",	\
+	"path[27] = %s", (pvs)->path[27] ? (pvs)->path[27] : "none",	\
+	"path[28] = %s", (pvs)->path[28] ? (pvs)->path[28] : "none",	\
+	"path[29] = %s", (pvs)->path[29] ? (pvs)->path[29] : "none",	\
+	"path[30] = %s", (pvs)->path[30] ? (pvs)->path[30] : "none",	\
+	"path[31] = %s", (pvs)->path[31] ? (pvs)->path[31] : "none"
+
 /*
  * result/lockd_flags are values returned from lvmlockd.
  *
@@ -223,6 +410,7 @@ static int _lockd_request(struct cmd_context *cmd,
 		          const char *lv_lock_args,
 		          const char *mode,
 		          const char *opts,
+			  const struct lvmlockd_pvs *lock_pvs,
 		          int *result,
 		          uint32_t *lockd_flags)
 {
@@ -247,6 +435,7 @@ static int _lockd_request(struct cmd_context *cmd,
 		cmd_name = "none";
 
 	if (vg_name && lv_name) {
+
 		reply = _lockd_send(req_name,
 					"cmd = %s", cmd_name,
 					"pid = " FMTd64, (int64_t) pid,
@@ -258,6 +447,7 @@ static int _lockd_request(struct cmd_context *cmd,
 					"vg_lock_type = %s", vg_lock_type ?: "none",
 					"vg_lock_args = %s", vg_lock_args ?: "none",
 					"lv_lock_args = %s", lv_lock_args ?: "none",
+					SEND_PVS_MESSAGE(lock_pvs),
 					NULL);
 
 		if (!_lockd_result(reply, result, lockd_flags))
@@ -571,6 +761,84 @@ static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	vg->lock_type = "dlm";
+	vg->lock_args = vg_lock_args;
+
+	if (!vg_write(vg) || !vg_commit(vg)) {
+		log_error("VG %s init failed: vg_write vg_commit", vg->name);
+		ret = 0;
+		goto out;
+	}
+
+	ret = 1;
+out:
+	daemon_reply_destroy(reply);
+	return ret;
+}
+
+static int _init_vg_idm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	daemon_reply reply;
+	const char *reply_str;
+	const char *vg_lock_args = NULL;
+	int result;
+	int ret;
+
+	if (!_use_lvmlockd)
+		return 0;
+	if (!_lvmlockd_connected)
+		return 0;
+
+	reply = _lockd_send("init_vg",
+				"pid = " FMTd64, (int64_t) getpid(),
+				"vg_name = %s", vg->name,
+				"vg_lock_type = %s", "idm",
+				NULL);
+
+	if (!_lockd_result(reply, &result, NULL)) {
+		ret = 0;
+		result = -ELOCKD;
+	} else {
+		ret = (result < 0) ? 0 : 1;
+	}
+
+	switch (result) {
+	case 0:
+		break;
+	case -ELOCKD:
+		log_error("VG %s init failed: lvmlockd not available", vg->name);
+		break;
+	case -EARGS:
+		log_error("VG %s init failed: invalid parameters for idm", vg->name);
+		break;
+	case -EMANAGER:
+		log_error("VG %s init failed: lock manager idm is not running", vg->name);
+		break;
+	case -EPROTONOSUPPORT:
+		log_error("VG %s init failed: lock manager idm is not supported by lvmlockd", vg->name);
+		break;
+	case -EEXIST:
+		log_error("VG %s init failed: a lockspace with the same name exists", vg->name);
+		break;
+	default:
+		log_error("VG %s init failed: %d", vg->name, result);
+	}
+
+	if (!ret)
+		goto out;
+
+	if (!(reply_str = daemon_reply_str(reply, "vg_lock_args", NULL))) {
+		log_error("VG %s init failed: lock_args not returned", vg->name);
+		ret = 0;
+		goto out;
+	}
+
+	if (!(vg_lock_args = dm_pool_strdup(cmd->mem, reply_str))) {
+		log_error("VG %s init failed: lock_args alloc failed", vg->name);
+		ret = 0;
+		goto out;
+	}
+
+	vg->lock_type = "idm";
 	vg->lock_args = vg_lock_args;
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
@@ -906,6 +1174,8 @@ int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg,
 		return 1;
 	case LOCK_TYPE_CLVM:
 		return 1;
+	case LOCK_TYPE_IDM:
+		return _init_vg_idm(cmd, vg);
 	case LOCK_TYPE_DLM:
 		return _init_vg_dlm(cmd, vg);
 	case LOCK_TYPE_SANLOCK:
@@ -951,7 +1221,8 @@ int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg,
 	 * When removing (not changing), each LV is locked
 	 * when it is removed, they do not need checking here.
 	 */
-	if (lock_type_num == LOCK_TYPE_DLM || lock_type_num == LOCK_TYPE_SANLOCK) {
+	if (lock_type_num == LOCK_TYPE_DLM || lock_type_num == LOCK_TYPE_SANLOCK ||
+	    lock_type_num == LOCK_TYPE_IDM) {
 		if (changing && !_lockd_all_lvs(cmd, vg)) {
 			log_error("Cannot change VG %s with active LVs", vg->name);
 			return 0;
@@ -962,6 +1233,7 @@ int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg,
 	case LOCK_TYPE_NONE:
 	case LOCK_TYPE_CLVM:
 		return 1;
+	case LOCK_TYPE_IDM:
 	case LOCK_TYPE_DLM:
 		/* returning an error will prevent vg_remove() */
 		return _busy_vg_dlm(cmd, vg);
@@ -981,6 +1253,7 @@ void lockd_free_vg_final(struct cmd_context *cmd, struct volume_group *vg)
 	switch (get_lock_type_from_string(vg->lock_type)) {
 	case LOCK_TYPE_NONE:
 	case LOCK_TYPE_CLVM:
+	case LOCK_TYPE_IDM:
 	case LOCK_TYPE_SANLOCK:
 		break;
 	case LOCK_TYPE_DLM:
@@ -1017,6 +1290,7 @@ int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_i
 	int host_id = 0;
 	int result;
 	int ret;
+	struct lvmlockd_pvs lock_pvs;
 
 	memset(uuid, 0, sizeof(uuid));
 
@@ -1052,6 +1326,9 @@ int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_i
 		host_id = find_config_tree_int(cmd, local_host_id_CFG, NULL);
 	}
 
+	memset(&lock_pvs, 0x0, sizeof(struct lvmlockd_pvs));
+	_retrive_vg_pv_list(vg, &lock_pvs);
+
 	reply = _lockd_send("start_vg",
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
@@ -1061,7 +1338,10 @@ int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_i
 				"version = " FMTd64, (int64_t) vg->seqno,
 				"host_id = " FMTd64, (int64_t) host_id,
 				"opts = %s", start_init ? "start_init" : "none",
+				SEND_PVS_MESSAGE(&lock_pvs),
 				NULL);
+
+	_free_pv_list(&lock_pvs);
 
 	if (!_lockd_result(reply, &result, &lockd_flags)) {
 		ret = 0;
@@ -1289,7 +1569,7 @@ int lockd_gl_create(struct cmd_context *cmd, const char *def_mode, const char *v
  req:
 	if (!_lockd_request(cmd, "lock_gl",
 			      NULL, vg_lock_type, NULL, NULL, NULL, NULL, mode, NULL,
-			      &result, &lockd_flags)) {
+			      NULL, &result, &lockd_flags)) {
 		/* No result from lvmlockd, it is probably not running. */
 		log_error("Global lock failed: check that lvmlockd is running.");
 		return 0;
@@ -1532,7 +1812,7 @@ int lockd_gl(struct cmd_context *cmd, const char *def_mode, uint32_t flags)
 
 	if (!_lockd_request(cmd, "lock_gl",
 			    NULL, NULL, NULL, NULL, NULL, NULL, mode, opts,
-			    &result, &lockd_flags)) {
+			    NULL, &result, &lockd_flags)) {
 		/* No result from lvmlockd, it is probably not running. */
 
 		/* We don't care if an unlock fails. */
@@ -1826,7 +2106,7 @@ int lockd_vg(struct cmd_context *cmd, const char *vg_name, const char *def_mode,
 
 	if (!_lockd_request(cmd, "lock_vg",
 			      vg_name, NULL, NULL, NULL, NULL, NULL, mode, NULL,
-			      &result, &lockd_flags)) {
+			      NULL, &result, &lockd_flags)) {
 		/*
 		 * No result from lvmlockd, it is probably not running.
 		 * Decide if it is ok to continue without a lock in
@@ -2040,6 +2320,7 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
 	uint32_t lockd_flags;
 	int refreshed = 0;
 	int result;
+	struct lvmlockd_pvs lock_pvs;
 
 	/*
 	 * Verify that when --readonly is used, no LVs should be activated or used.
@@ -2085,14 +2366,21 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
  retry:
 	log_debug("lockd LV %s/%s mode %s uuid %s", vg->name, lv_name, mode, lv_uuid);
 
+	memset(&lock_pvs, 0x0, sizeof(struct lvmlockd_pvs));
+
+	_retrive_lv_pv_list(vg, lv_name, &lock_pvs);
+
 	if (!_lockd_request(cmd, "lock_lv",
 			       vg->name, vg->lock_type, vg->lock_args,
 			       lv_name, lv_uuid, lock_args, mode, opts,
-			       &result, &lockd_flags)) {
+			       &lock_pvs, &result, &lockd_flags)) {
+		_free_pv_list(&lock_pvs);
 		/* No result from lvmlockd, it is probably not running. */
 		log_error("Locking failed for LV %s/%s", vg->name, lv_name);
 		return 0;
 	}
+
+	_free_pv_list(&lock_pvs);
 
 	/* The lv was not active/locked. */
 	if (result == -ENOENT && !strcmp(mode, "un"))
@@ -2405,6 +2693,7 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 		return 1;
 	case LOCK_TYPE_SANLOCK:
 	case LOCK_TYPE_DLM:
+	case LOCK_TYPE_IDM:
 		break;
 	default:
 		log_error("lockd_init_lv: unknown lock_type.");
@@ -2526,6 +2815,8 @@ int lockd_init_lv(struct cmd_context *cmd, struct volume_group *vg, struct logic
 		lv->lock_args = "pending";
 	else if (!strcmp(vg->lock_type, "dlm"))
 		lv->lock_args = "dlm";
+	else if (!strcmp(vg->lock_type, "idm"))
+		lv->lock_args = "idm";
 
 	return 1;
 }
@@ -2541,6 +2832,7 @@ int lockd_free_lv(struct cmd_context *cmd, struct volume_group *vg,
 		return 1;
 	case LOCK_TYPE_DLM:
 	case LOCK_TYPE_SANLOCK:
+	case LOCK_TYPE_IDM:
 		if (!lock_args)
 			return 1;
 		return _free_lv(cmd, vg, lv_name, lv_id, lock_args);
@@ -2711,6 +3003,10 @@ const char *lockd_running_lock_type(struct cmd_context *cmd, int *found_multiple
 	case LOCK_TYPE_DLM:
 		log_debug("lvmlockd found dlm");
 		lock_type = "dlm";
+		break;
+	case LOCK_TYPE_IDM:
+		log_debug("lvmlockd found idm");
+		lock_type = "idm";
 		break;
 	default:
 		log_error("Failed to find a running lock manager.");
