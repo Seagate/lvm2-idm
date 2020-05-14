@@ -119,6 +119,20 @@ prepare_sanlock() {
 	fi
 }
 
+prepare_idm() {
+	if pgrep seagate_ilm; then
+		echo "Cannot run while existing seagate_ilm process exists"
+		exit 1
+	fi
+
+	seagate_ilm -D 0 -l 0 -L 7 -E 7 -S 7
+
+	if ! pgrep seagate_ilm; then
+		echo "Failed to start seagate_ilm"
+		exit 1
+	fi
+}
+
 prepare_lvmlockd() {
 	if pgrep lvmlockd ; then
 		echo "Cannot run while existing lvmlockd process exists"
@@ -134,6 +148,11 @@ prepare_lvmlockd() {
 		# make check_lvmlockd_dlm
 		echo "starting lvmlockd for dlm"
 		lvmlockd
+
+	elif test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
+		# make check_lvmlockd_idm
+		echo "starting lvmlockd for idm"
+		lvmlockd -g idm
 
 	elif test -n "$LVM_TEST_LVMLOCKD_TEST_DLM"; then
 		# make check_lvmlockd_test
