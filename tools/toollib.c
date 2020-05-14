@@ -657,7 +657,7 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 		lock_type = arg_str_value(cmd, locktype_ARG, "");
 
 		if (arg_is_set(cmd, shared_ARG) && !is_lockd_type(lock_type)) {
-			log_error("The --shared option requires lock type sanlock or dlm.");
+			log_error("The --shared option requires lock type sanlock, dlm or idm.");
 			return 0;
 		}
 
