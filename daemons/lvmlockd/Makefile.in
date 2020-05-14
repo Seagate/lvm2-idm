@@ -27,6 +27,11 @@ ifeq ("@BUILD_LOCKDDLM@", "yes")
   LOCK_LIBS += -ldlm_lt
 endif
 
+ifeq ("@BUILD_LOCKDIDM@", "yes")
+  SOURCES += lvmlockd-idm.c
+  LOCK_LIBS += -lseagate_ilm
+endif
+
 SOURCES2 = lvmlockctl.c
 
 TARGETS = lvmlockd lvmlockctl
