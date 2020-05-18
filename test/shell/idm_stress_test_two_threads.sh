@@ -17,17 +17,19 @@ test -n "$LVM_TEST_LOCK_TYPE_IDM" && initskip
 
 . lib/inittest
 
-aux prepare_devs 5
+aux prepare_devs 6
 get_devs
 
 pvcreate -M2 "${DEVICES[@]}"
 
-vgcreate -M2 "$vg1" "${DEVICES[@]}"
-vgsplit -M2 $vg1 $vg2 "$dev1" "$dev2" "$dev3"
+vgcreate --shared -M2 "$vg1" "$dev1" "$dev2" "$dev3"
+vgcreate --shared -M2 "$vg2" "$dev4" "$dev5" "$dev6"
+
+#vgsplit -M2 $vg1 $vg2 "$dev1" "$dev2" "$dev3"
 
 test_vg_thread1()
 {
-	for i in {1..2}
+	for i in {1..1000}
 	do
 		# Create new logic volume and deactivate it
 		lvcreate -a n --zero n -l 1 -n foo $vg1
@@ -65,7 +67,7 @@ test_vg_thread1()
 
 test_vg_thread2()
 {
-	for i in {1..2}
+	for i in {1..1000}
 	do
 		# Create new logic volume and deactivate it
 		lvcreate -a n --zero n -l 1 -n foo $vg2
