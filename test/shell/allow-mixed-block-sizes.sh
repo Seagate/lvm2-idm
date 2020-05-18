@@ -18,6 +18,9 @@ losetup -h | grep sector-size || skip
 
 dd if=/dev/zero of=loopa bs=$((1024*1024)) count=2 2> /dev/null
 dd if=/dev/zero of=loopb bs=$((1024*1024)) count=2 2> /dev/null
+
+udevadm settle
+
 LOOP1=$(losetup -f loopa --sector-size 4096 --show)
 LOOP2=$(losetup -f loopb --show)
 
