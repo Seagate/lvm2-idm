@@ -28,6 +28,21 @@ lvchange $vg/foo -a y
 # Inject failure so cannot send request to drives
 idm_inject_failure 100
 
+# Wait for 40s, but the lock will not be time out
+sleep 40
+
+# Inject failure with 0% so can access drives
+idm_inject_failure 0
+
+# Deactivate logic volume due to locking failure
+lvchange $vg/foo -a n
+
+# Activate logic volume
+lvchange $vg/foo -a y
+
+# Inject failure so cannot send request to drives
+idm_inject_failure 100
+
 # Wait for lock time out caused by drive failure
 sleep 70
 
