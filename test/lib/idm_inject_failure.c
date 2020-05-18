@@ -14,8 +14,9 @@
 
 #include <ilm.h>
 
-int main(void)
+int main(int argc, char *argv[])
 {
+	int pecent = atoi(argv[1]);
 	int ret, s;
 
 	ret = ilm_connect(&s);
@@ -26,7 +27,7 @@ int main(void)
 		exit(-1);
 	}
 
-	ret = ilm_inject_fault(s, 100);
+	ret = ilm_inject_fault(s, pecent);
 	if (ret == 0) {
 		printf("ilm_inject_fault (100): SUCCESS\n");
 	} else {

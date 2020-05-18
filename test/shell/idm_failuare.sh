@@ -26,7 +26,7 @@ lvcreate -a n --zero n -l 1 -n foo $vg
 lvchange $vg/foo -a y
 
 # Inject failure so cannot send request to drives
-idm_inject_failure
+idm_inject_failure 100
 
 # Wait for lock time out caused by drive failure
 sleep 70
