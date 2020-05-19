@@ -146,11 +146,13 @@ int lm_prepare_lockspace_idm(struct lockspace *ls)
 	memset(killargs, 0, sizeof(killargs));
 	snprintf(killargs, IDM_FAILURE_ARGS_LEN, "--kill %s", ls->vg_name);
 
-	lm = zalloc(sizeof(struct lm_idm));
+	lm = malloc(sizeof(struct lm_idm));
 	if (!lm) {
 		ret = -ENOMEM;
 		goto fail;
 	}
+
+	memset(lm, 0x0, sizeof(struct lm_idm));
 
 	rv = ilm_connect(&lm->sock);
 	if (rv < 0) {
@@ -219,10 +221,11 @@ static int lm_add_resource_idm(struct lockspace *ls, struct resource *r)
 	char *buf;
 
 	if (r->type == LD_RT_GL || r->type == LD_RT_VG) {
-		buf = zalloc(sizeof(struct val_blk));
+		buf = malloc(sizeof(struct val_blk));
 		if (!buf)
 			return -ENOMEM;
 
+		memset(buf, 0x0, sizeof(struct val_blk));
 		rdi->vb = (struct val_blk *)buf;
 	}
 
