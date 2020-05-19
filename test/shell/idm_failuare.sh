@@ -49,4 +49,7 @@ sleep 70
 check grep_lvmlockd_dump "S lvm_$vg kill_vg"
 lvmlockctl --drop $vg
 
+# Recovery drive accessing
+idm_inject_failure 0
+
 aux teardown_devs
