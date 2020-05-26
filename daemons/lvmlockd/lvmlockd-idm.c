@@ -64,7 +64,9 @@ static uint64_t _read_utc_time(void)
 	struct tm time_info;
 	uint64_t utc;
 
-        gmtime_r(&cur_time.tv_sec, &time_info);
+	gettimeofday(&cur_time, NULL);
+
+	gmtime_r(&cur_time.tv_sec, &time_info);
 
 	utc  = time_info.tm_sec & 0xff;
 	utc |= (time_info.tm_min  & 0xff) < 8;
