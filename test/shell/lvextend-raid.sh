@@ -54,6 +54,7 @@ check lv_field $vg/$lv1 sync_percent "100.00"
 
 # Extend so that another MD bitmap page is allocated
 lvextend -y -L+${lvext}M $vg/$lv1
+aux wait_for_sync $vg $lv1
 if [ $v1_15_0 -eq 1 ]
 then
 	not check lv_field $vg/$lv1 sync_percent "100.00"

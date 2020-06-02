@@ -495,6 +495,7 @@ teardown_devs() {
 	teardown_udev_cookies
 
 	test ! -f MD_DEV || cleanup_md_dev
+	udev_wait
 	test ! -f DEVICES || teardown_devs_prefixed "$PREFIX"
 	test ! -f RAMDISK || { modprobe -r brd || true ; }
 
@@ -1501,7 +1502,7 @@ wait_for_sync() {
 	local i
 	for i in {1..100} ; do
 		check in_sync "$@" && return
-		sleep .2
+		sleep .5
 	done
 
 	echo "Sync is taking too long - assume stuck"
@@ -1712,7 +1713,7 @@ wait_pvmove_lv_ready() {
 				lvmpolld_dump > lvmpolld_dump.txt
 				! check_lvmpolld_init_rq_count 1 "$lvid" lvid || break;
 			}
-			sleep .1
+			sleep .2
 			retries=$((retries-1))
 		done
 	else
@@ -1720,7 +1721,7 @@ wait_pvmove_lv_ready() {
 			test "$retries" -le 0 && die "Waiting for pvmove LV to get activated has timed out"
 			dmsetup info -c -o tables_loaded "$1" >out 2>/dev/null|| true;
 			not grep Live out >/dev/null || break
-			sleep .1
+			sleep .2
 			retries=$((retries-1))
 		done
 	fi
