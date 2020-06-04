@@ -267,10 +267,10 @@ static int lm_idm_scsi_search_partition(char *dev)
 			log_error("partition name='%s'\n", p);
 
 			if (!strcmp(p, "propeller"))
-				found = 1;
+				found = blkid_partition_get_partno(par);
 		}
 
-		if (found)
+		if (found >= 0)
 			break;
 	}
 
@@ -355,6 +355,8 @@ static int lm_idm_generate_global_list(void)
 		ret = lm_idm_scsi_search_partition(dev);
 		if (ret < 0)
 			continue;
+
+		snprintf(dev, sizeof(dev), "/dev/%s%d", blk_str, ret);
 
 		glb_op.drives[glb_op.drive_num] = strdup(dev);
 		glb_op.drive_num++;
