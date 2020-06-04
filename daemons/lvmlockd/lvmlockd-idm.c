@@ -23,6 +23,7 @@
 #include "ilm.h"
 
 #include <blkid/blkid.h>
+#include <dirent.h>
 #include <errno.h>
 #include <poll.h>
 #include <stddef.h>
@@ -122,6 +123,247 @@ static int _to_idm_mode(int ld_mode, uint32_t *mode)
 	};
 
 	return rv;
+}
+
+#define SYSFS_ROOT		"/sys"
+#define BUS_SCSI_DEVS		"/bus/scsi/devices"
+
+static char blk_str[PATH_MAX];
+
+static struct idm_lock_op glb_op;
+
+static int lm_idm_scsi_dir_select(const struct dirent *s)
+{
+	/* Following no longer needed but leave for early lk 2.6 series */
+	if (strstr(s->d_name, "mt"))
+		return 0;
+
+	/* st auxiliary device names */
+	if (strstr(s->d_name, "ot"))
+		return 0;
+
+	/* osst auxiliary device names */
+	if (strstr(s->d_name, "gen"))
+		return 0;
+
+	/* SCSI host */
+	if (!strncmp(s->d_name, "host", 4))
+		return 0;
+
+	/* SCSI target */
+	if (!strncmp(s->d_name, "target", 6))
+		return 0;
+
+	/* Only select directory with x:x:x:x */
+	if (strchr(s->d_name, ':'))
+		return 1;
+
+	return 0;
+}
+
+static int lm_idm_scsi_block_select(const struct dirent *s)
+{
+	if (!strncmp("block", s->d_name, 5))
+		return 1;
+
+	return 0;
+}
+
+static int lm_idm_scsi_find_block_path(const char *path)
+{
+        int num, i;
+        struct dirent **namelist;
+
+        num = scandir(path, &namelist, lm_idm_scsi_block_select, NULL);
+        if (num < 0)
+                return -1;
+
+        for (i = 0; i < num; i++)
+                free(namelist[i]);
+        free(namelist);
+        return num;
+}
+
+static int lm_idm_scsi_block_node_select(const struct dirent *s)
+{
+	size_t len;
+
+        if (DT_LNK != s->d_type && DT_DIR != s->d_type)
+		return 0;
+
+        if (DT_DIR == s->d_type) {
+		len = strlen(s->d_name);
+
+                if ((len == 1) && ('.' == s->d_name[0]))
+			return 0;   /* this directory: '.' */
+
+                if ((len == 2) &&
+		    ('.' == s->d_name[0]) && ('.' == s->d_name[1]))
+			return 0;   /* parent: '..' */
+        }
+
+	strncpy(blk_str, s->d_name, PATH_MAX);
+        return 1;
+}
+
+static int lm_idm_scsi_find_block_node(const char *dir_name)
+{
+        int num, i;
+        struct dirent **namelist;
+
+        num = scandir(dir_name, &namelist, lm_idm_scsi_block_node_select, NULL);
+        if (num < 0)
+                return -1;
+
+        for (i = 0; i < num; ++i)
+                free(namelist[i]);
+        free(namelist);
+        return num;
+}
+
+static int lm_idm_scsi_search_partition(char *dev)
+{
+	int i, nparts;
+	blkid_probe pr;
+	blkid_partlist ls;
+	blkid_parttable root_tab;
+	int found = -1;
+
+	pr = blkid_new_probe_from_filename(dev);
+	if (!pr) {
+		log_error("%s: failed to create a new libblkid probe\n", dev);
+		return -1;
+	}
+
+	/* Binary interface */
+	ls = blkid_probe_get_partitions(pr);
+	if (!ls) {
+		log_error("%s: failed to read partitions\n", dev);
+		return -1;
+	}
+
+	/*
+	 * Print info about the primary (root) partition table
+	 */
+	root_tab = blkid_partlist_get_table(ls);
+	if (!root_tab) {
+		log_error("%s: does not contains any known partition table\n", dev);
+		return -1;
+	}
+
+	/*
+	 * List partitions
+	 */
+	nparts = blkid_partlist_numof_partitions(ls);
+	if (!nparts)
+		goto done;
+
+	for (i = 0; i < nparts; i++) {
+		const char *p;
+		blkid_partition par = blkid_partlist_get_partition(ls, i);
+
+		p = blkid_partition_get_name(par);
+		if (p) {
+			log_error("partition name='%s'\n", p);
+
+			if (!strcmp(p, "propeller"))
+				found = 1;
+		}
+
+		if (found)
+			break;
+	}
+
+done:
+	blkid_free_probe(pr);
+	return found;
+}
+
+static int lm_idm_scsi_get_value(const char * dir_name,
+			      const char * base_name,
+			      char * value, int max_value_len)
+{
+        int len;
+        FILE * f;
+        char b[PATH_MAX];
+
+        snprintf(b, sizeof(b), "%s/%s", dir_name, base_name);
+        if (NULL == (f = fopen(b, "r"))) {
+                return -1;
+        }
+        if (NULL == fgets(value, max_value_len, f)) {
+                /* assume empty */
+                value[0] = '\0';
+                fclose(f);
+                return 0;
+        }
+        len = strlen(value);
+        if ((len > 0) && (value[len - 1] == '\n'))
+                value[len - 1] = '\0';
+        fclose(f);
+        return 0;
+}
+
+static int lm_idm_generate_global_list(void)
+{
+	struct dirent **namelist;
+	char devs_path[PATH_MAX];
+	char dev_path[PATH_MAX];
+	char blk_path[PATH_MAX];
+	char dev[PATH_MAX];
+	int i, num;
+	int ret;
+	char value[64];
+
+	if (glb_op.drive_num)
+		return 0;
+
+	snprintf(devs_path, sizeof(devs_path), "%s%s",
+		 SYSFS_ROOT, BUS_SCSI_DEVS);
+
+	num = scandir(devs_path, &namelist, lm_idm_scsi_dir_select, NULL);
+	if (num < 0) {  /* scsi mid level may not be loaded */
+		log_error("Attached devices: none\n");
+		return -1;
+	}
+
+	for (i = 0; i < num; ++i) {
+		snprintf(dev_path, sizeof(dev_path), "%s/%s",
+			 devs_path, namelist[i]->d_name);
+
+		ret = lm_idm_scsi_get_value(dev_path, "rev",
+					 value, sizeof(value));
+		if (ret < 0)
+			continue;
+
+		if (strcmp("1022", value))
+			continue;
+
+		ret = lm_idm_scsi_find_block_path(dev_path);
+		if (ret < 0)
+			continue;
+
+		snprintf(blk_path, sizeof(blk_path), "%s/%s",
+			 dev_path, "block");
+
+		ret = lm_idm_scsi_find_block_node(blk_path);
+		if (ret < 0)
+			continue;
+
+		snprintf(dev, sizeof(dev), "/dev/%s", blk_str);
+
+		ret = lm_idm_scsi_search_partition(dev);
+		if (ret < 0)
+			continue;
+
+		glb_op.drives[glb_op.drive_num] = strdup(dev);
+		glb_op.drive_num++;
+	}
+
+	for (i = 0; i < num; i++)
+		free(namelist[i]);
+	free(namelist);
+	return 0;
 }
 
 int lm_data_size_idm(void)
@@ -285,9 +527,13 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 	rdi->op.timeout = 60000;
 
 	if (r->type == LD_RT_GL) {
-		rdi->op.drive_num = 2;
-		rdi->op.drives[0] = (char *)"/dev/sda1";
-		rdi->op.drives[1] = (char *)"/dev/sda2";
+		rv = lm_idm_generate_global_list();
+		if (rv < 0) {
+			log_error("lock_idm fail to generate glb list");
+			return -EIO;
+		}
+
+		memcpy(&rdi->op, &glb_op, sizeof(struct idm_lock_op));
 	} else if (r->type == LD_RT_VG) {
 		for (i = 0; i < 32; i++) {
 			if (!ls->pvs_path[i])
