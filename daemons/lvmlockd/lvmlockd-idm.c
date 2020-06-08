@@ -540,7 +540,10 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			return -EIO;
 		}
 
-		memcpy(&rdi->op, &glb_op, sizeof(struct idm_lock_op));
+		rdi->op.drive_num = glb_op.drive_num;
+		for (i = 0; i < glb_op.drive_num; i++)
+			rdi->op.drives[i] = glb_op.drives[i];
+
 	} else if (r->type == LD_RT_VG) {
 		for (i = 0; i < 32; i++) {
 			if (!ls->pvs_path[i])
