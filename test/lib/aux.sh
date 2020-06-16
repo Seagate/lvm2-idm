@@ -655,7 +655,7 @@ teardown() {
 	test -n "$TESTDIR" && {
 		cd "$TESTOLDPWD" || die "Failed to enter $TESTOLDPWD"
 		# after this delete no further write is possible
-		rm -rf "${TESTDIR:?}" || echo BLA
+		# rm -rf "${TESTDIR:?}" || echo BLA
 	}
 
 	echo "ok"
@@ -902,6 +902,21 @@ prepare_devs() {
 		devsize=1024
 	fi
 
+	if test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
+		BLK_DEVS[1]="/dev/sdb2"
+		BLK_DEVS[2]="/dev/sdc2"
+		BLK_DEVS[3]="/dev/sdd2"
+		BLK_DEVS[4]="/dev/sde2"
+		BLK_DEVS[5]="/dev/sdb3"
+		BLK_DEVS[6]="/dev/sdc3"
+		BLK_DEVS[7]="/dev/sdd3"
+		BLK_DEVS[8]="/dev/sde3"
+
+		for d in "${BLK_DEVS[@]}"; do
+			blkdiscard "$d" 2>/dev/null || true
+		done
+	fi
+
 	touch DEVICES
 	prepare_backing_dev $(( n * devsize ))
 	# shift start of PV devices on /dev/loopXX by 1M
@@ -918,7 +933,9 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		DEVICES[$count]=$dev
 		count=$((  count + 1 ))
-		echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) >> /tmp/bbb.log
+		echo $i >> /tmp/aaa.log
 		dmsetup create -u "TEST-$name" "$name" "$name.table" || touch CREATE_FAILED &
 		test -f CREATE_FAILED && break;
 	done
