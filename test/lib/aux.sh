@@ -655,7 +655,7 @@ teardown() {
 	test -n "$TESTDIR" && {
 		cd "$TESTOLDPWD" || die "Failed to enter $TESTOLDPWD"
 		# after this delete no further write is possible
-		# rm -rf "${TESTDIR:?}" || echo BLA
+		rm -rf "${TESTDIR:?}" || echo BLA
 	}
 
 	echo "ok"
@@ -903,14 +903,24 @@ prepare_devs() {
 	fi
 
 	if test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
-		BLK_DEVS[1]="/dev/sdb2"
-		BLK_DEVS[2]="/dev/sdc2"
-		BLK_DEVS[3]="/dev/sdd2"
-		BLK_DEVS[4]="/dev/sde2"
-		BLK_DEVS[5]="/dev/sdb3"
-		BLK_DEVS[6]="/dev/sdc3"
-		BLK_DEVS[7]="/dev/sdd3"
-		BLK_DEVS[8]="/dev/sde3"
+		sg_raw -v -r 512 -o test_data.bin /dev/sg2 88 00 01 00 00 00 00 20 FF 01 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg2 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg3 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg4 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg5 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg6 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg7 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg8 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg9 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+
+		BLK_DEVS[1]="/dev/sda2"
+		BLK_DEVS[2]="/dev/sdb2"
+		BLK_DEVS[3]="/dev/sdc2"
+		BLK_DEVS[4]="/dev/sdd2"
+		BLK_DEVS[5]="/dev/sda3"
+		BLK_DEVS[6]="/dev/sdb3"
+		BLK_DEVS[7]="/dev/sdc3"
+		BLK_DEVS[8]="/dev/sdd3"
 
 		for d in "${BLK_DEVS[@]}"; do
 			blkdiscard "$d" 2>/dev/null || true
