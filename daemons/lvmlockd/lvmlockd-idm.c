@@ -23,6 +23,7 @@
 #include "ilm.h"
 
 #include <blkid/blkid.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <poll.h>
@@ -96,6 +97,36 @@ static int _to_idm_mode(int ld_mode, uint32_t *mode)
 	};
 
 	return rv;
+}
+
+static int _uuid_read_format(char *uuid_str, const char *buffer)
+{
+	int out = 0;
+
+	/* just strip out any dashes */
+	while (*buffer) {
+
+		if (*buffer == '-') {
+			buffer++;
+			continue;
+		}
+
+		if (out >= 32) {
+			log_error("Too many characters to be uuid.");
+			return -1;
+		}
+
+		uuid_str[out++] = *buffer;
+		buffer++;
+	}
+
+	if (out != 32) {
+		log_error("Couldn't read uuid: incorrect number of "
+			  "characters.");
+		return -1;
+	}
+
+	return 0;
 }
 
 #define SYSFS_ROOT		"/sys"
@@ -470,7 +501,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	uuid_t uuid;
+	char uuid_str[32];
 	uint64_t timestamp;
 	int reset_vb = 0;
 	int rv, i;
@@ -541,17 +572,14 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 
 	memset(&rdi->id, 0x0, sizeof(struct idm_lock_id));
 	if (r->type == LD_RT_VG) {
-		uuid_parse(ls->vg_uuid, uuid);
-		memcpy(&rdi->id.vg_uuid, &uuid, sizeof(uuid_t));
+		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
 
 		log_debug("S %s R %s VG uuid %s",
 			  ls->name, r->name, ls->vg_uuid);
-	} else if (r->type == LD_RT_LV) {
-		uuid_parse(ls->vg_uuid, uuid);
-		memcpy(&rdi->id.vg_uuid, &uuid, sizeof(uuid_t));
 
-		uuid_parse(lv_uuid, uuid);
-		memcpy(&rdi->id.lv_uuid, &uuid, sizeof(uuid_t));
+	} else if (r->type == LD_RT_LV) {
+		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
+		_uuid_read_format(rdi->id.lv_uuid, lv_uuid);
 
 		log_debug("S %s R %s VG uuid %s",
 			  ls->name, r->name, ls->vg_uuid);
