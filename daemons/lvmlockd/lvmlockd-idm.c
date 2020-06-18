@@ -23,6 +23,7 @@
 #include "ilm.h"
 
 #include <blkid/blkid.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <poll.h>
@@ -79,35 +80,6 @@ static uint64_t _read_utc_time(void)
 	return utc;
 }
 
-static int _uuid_read_format(char *uuid, const char *buffer)
-{
-	int out = 0;
-
-	/* just strip out any dashes */
-	while (*buffer) {
-
-		if (*buffer == '-') {
-			buffer++;
-			continue;
-		}
-
-		if (out >= 32) {
-			log_error("Too many characters to be uuid.");
-			return -1;
-		}
-
-		uuid[out++] = *buffer++;
-	}
-
-	if (out != 32) {
-		log_error("Couldn't read uuid: incorrect number of "
-			  "characters.");
-		return -1;
-	}
-
-	return 0;
-}
-
 static int _to_idm_mode(int ld_mode, uint32_t *mode)
 {
 	int rv = 0;
@@ -125,6 +97,36 @@ static int _to_idm_mode(int ld_mode, uint32_t *mode)
 	};
 
 	return rv;
+}
+
+static int _uuid_read_format(char *uuid_str, const char *buffer)
+{
+	int out = 0;
+
+	/* just strip out any dashes */
+	while (*buffer) {
+
+		if (*buffer == '-') {
+			buffer++;
+			continue;
+		}
+
+		if (out >= 32) {
+			log_error("Too many characters to be uuid.");
+			return -1;
+		}
+
+		uuid_str[out++] = *buffer;
+		buffer++;
+	}
+
+	if (out != 32) {
+		log_error("Couldn't read uuid: incorrect number of "
+			  "characters.");
+		return -1;
+	}
+
+	return 0;
 }
 
 #define SYSFS_ROOT		"/sys"
@@ -338,9 +340,6 @@ static int lm_idm_generate_global_list(void)
 		if (ret < 0)
 			continue;
 
-		if (strcmp("1022", value))
-			continue;
-
 		ret = lm_idm_scsi_find_block_path(dev_path);
 		if (ret < 0)
 			continue;
@@ -502,7 +501,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	char uuid[32];
+	char uuid_str[32];
 	uint64_t timestamp;
 	int reset_vb = 0;
 	int rv, i;
@@ -532,6 +531,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 	}
 
 	rdi->op.timeout = 60000;
+	rdi->op.drive_num = 0;
 
 	if (r->type == LD_RT_GL) {
 		rv = lm_idm_generate_global_list();
@@ -572,21 +572,26 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 
 	memset(&rdi->id, 0x0, sizeof(struct idm_lock_id));
 	if (r->type == LD_RT_VG) {
-		_uuid_read_format(uuid, ls->vg_uuid);
-		memcpy(&rdi->id.vg_uuid, uuid, sizeof(uuid_t));
-	} else if (r->type == LD_RT_LV) {
-		_uuid_read_format(uuid, ls->vg_uuid);
-		memcpy(&rdi->id.vg_uuid, uuid, sizeof(uuid_t));
+		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
 
-		_uuid_read_format(uuid, lv_uuid);
-		memcpy(&rdi->id.lv_uuid, uuid, sizeof(uuid_t));
+		log_debug("S %s R %s VG uuid %s",
+			  ls->name, r->name, ls->vg_uuid);
+
+	} else if (r->type == LD_RT_LV) {
+		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
+		_uuid_read_format(rdi->id.lv_uuid, lv_uuid);
+
+		log_debug("S %s R %s VG uuid %s",
+			  ls->name, r->name, ls->vg_uuid);
+		log_debug("S %s R %s LV uuid %s",
+			  ls->name, r->name, lv_uuid);
 	}
 
 	rv = ilm_lock(lmi->sock, &rdi->id, &rdi->op);
 	if (rv < 0) {
 		log_debug("S %s R %s lock_idm acquire mode %d rv %d",
 			  ls->name, r->name, ld_mode, rv);
-		return -EAGAIN;
+		return -ELOCKIO;
 	}
 
 	if (rdi->vb) {

@@ -902,6 +902,31 @@ prepare_devs() {
 		devsize=1024
 	fi
 
+	if test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
+		sg_raw -v -r 512 -o test_data.bin /dev/sg2 88 00 01 00 00 00 00 20 FF 01 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg2 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg3 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg4 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg5 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg6 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg7 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg8 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg9 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+
+		BLK_DEVS[1]="/dev/sda2"
+		BLK_DEVS[2]="/dev/sdb2"
+		BLK_DEVS[3]="/dev/sdc2"
+		BLK_DEVS[4]="/dev/sdd2"
+		BLK_DEVS[5]="/dev/sda3"
+		BLK_DEVS[6]="/dev/sdb3"
+		BLK_DEVS[7]="/dev/sdc3"
+		BLK_DEVS[8]="/dev/sdd3"
+
+		for d in "${BLK_DEVS[@]}"; do
+			blkdiscard "$d" 2>/dev/null || true
+		done
+	fi
+
 	touch DEVICES
 	prepare_backing_dev $(( n * devsize ))
 	# shift start of PV devices on /dev/loopXX by 1M
@@ -918,7 +943,9 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		DEVICES[$count]=$dev
 		count=$((  count + 1 ))
-		echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) >> /tmp/bbb.log
+		echo $i >> /tmp/aaa.log
 		dmsetup create -u "TEST-$name" "$name" "$name.table" || touch CREATE_FAILED &
 		test -f CREATE_FAILED && break;
 	done
