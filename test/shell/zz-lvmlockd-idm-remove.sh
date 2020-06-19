@@ -26,4 +26,4 @@ killall lvmlockd
 sleep 1
 killall lvmlockd || true
 sleep 1
-killall -9 seagate_ilm
+killall seagate_ilm
