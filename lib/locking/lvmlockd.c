@@ -218,6 +218,7 @@ static void _retrive_vg_pv_list(struct volume_group *vg,
 			break;
 
 	        pv = pvl->pv;
+		log_debug("%s [VG] find PV device=%s", __func__, pv_dev_name(pv));
 		lock_pvs->path[i] = strdup(pv_dev_name(pv));
 		i++;
 	}
@@ -234,9 +235,19 @@ static void _retrive_lv_pv_list(struct volume_group *vg,
 	struct physical_volume *pv;
 	const struct pv_segment *pvseg;
 	int i, found = 0;
+	char *lv_name_prefix;
 
 	i = 0;
-	//log_error("%s lv_name=%s", __func__, lv_name);
+
+	/* Allocate buffer for 'lv_name' + '_' + '\0' */
+	lv_name_prefix = malloc(strlen(lv_name) + 1 + 1);
+
+	snprintf(lv_name_prefix, strlen(lv_name) + 1 + 1,
+		 "%s_", lv_name);
+
+	log_debug("%s lv_name=%s lv_name_prefix=%s", __func__,
+		  lv_name, lv_name_prefix);
+
 	dm_list_iterate_items(pvl, &vg->pvs) {
 
 		/* Check if out of boundary */
@@ -252,59 +263,24 @@ static void _retrive_lv_pv_list(struct volume_group *vg,
 			    !pvseg->lvseg->lv || !pvseg->lvseg->lv->name)
 				continue;
 
+			log_debug("%s pvseg->lvseg->name=%s", __func__,
+				  pvseg->lvseg->lv->name);
+
 			if (!strcmp(lv_name, pvseg->lvseg->lv->name)) {
 				found = 1;
 				break;
 			}
 
-			/* Find out corresponding PVs for mirror volumes */
-			if (strstr(lv_name, "mirror") &&
-			    strstr(pvseg->lvseg->lv->name, lv_name)) {
-				found = 1;
-				break;
-			}
-
-			/* Find out corresponding PVs for cached volumes */
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_corig")) {
-				found = 1;
-				break;
-			}
-
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_cvol")) {
-				found = 1;
-				break;
-			}
-
-			/* Find out corresponding PVs for thin volumes */
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_tdata")) {
-				found = 1;
-				break;
-			}
-
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_tmeta")) {
-				found = 1;
-				break;
-			}
-
-			/* Find out corresponding PVs for raid volumes */
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_rmeta")) {
-				found = 1;
-				break;
-			}
-
-			if (strstr(pvseg->lvseg->lv->name, lv_name) &&
-			    strstr(pvseg->lvseg->lv->name, "_rimage")) {
+			/* Find out corresponding PVs with lv name prefix */
+			if (strstr(pvseg->lvseg->lv->name, lv_name_prefix)) {
 				found = 1;
 				break;
 			}
 		}
 
 		if (found) {
+			log_debug("%s [LV] find PV device=%s", __func__,
+				  pv_dev_name(pv));
 			lock_pvs->path[i] = strdup(pv_dev_name(pv));
 			i++;
 		}
@@ -334,6 +310,7 @@ static void _retrive_lv_pv_list(struct volume_group *vg,
 		}
 	}
 
+	free(lv_name_prefix);
 	return;
 }
 
