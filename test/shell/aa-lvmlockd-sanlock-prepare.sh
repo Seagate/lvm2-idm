@@ -29,6 +29,7 @@ test_description='Set up things to run tests with sanlock'
 
 GL_DEV="/dev/mapper/GL_DEV"
 GL_FILE="/tmp/gl_file.img"
+dmsetup remove glvg-lvmlock || true
 dmsetup remove GL_DEV || true
 rm -f "$GL_FILE"
 dd if=/dev/zero of="$GL_FILE" bs=$((1024*1024)) count=1024 2> /dev/null
