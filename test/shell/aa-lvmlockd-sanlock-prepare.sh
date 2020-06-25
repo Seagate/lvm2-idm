@@ -28,7 +28,7 @@ test_description='Set up things to run tests with sanlock'
 # to remove this VG and device.
 
 GL_DEV="/dev/mapper/GL_DEV"
-GL_FILE="$PWD/gl_file.img"
+GL_FILE="/tmp/gl_file.img"
 dmsetup remove GL_DEV || true
 rm -f "$GL_FILE"
 dd if=/dev/zero of="$GL_FILE" bs=$((1024*1024)) count=1024 2> /dev/null
