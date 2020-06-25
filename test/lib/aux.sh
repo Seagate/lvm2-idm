@@ -871,6 +871,27 @@ prepare_backing_dev() {
 		BACKING_DEV=$LVM_TEST_BACKING_DEVICE
 		echo "$BACKING_DEV" > BACKING_DEV
 		return 0
+	elif test -n "$LVM_TEST_BACKING_MULTI_DEVICES"; then
+		BLK_DEVS[1]="/dev/sdi2"
+		BLK_DEVS[2]="/dev/sdj2"
+		BLK_DEVS[3]="/dev/sdl2"
+		BLK_DEVS[4]="/dev/sdb2"
+		BLK_DEVS[5]="/dev/sdi3"
+		BLK_DEVS[6]="/dev/sdj3"
+		BLK_DEVS[7]="/dev/sdl3"
+		BLK_DEVS[8]="/dev/sdb3"
+		BLK_DEVS[9]="/dev/sdi4"
+		BLK_DEVS[10]="/dev/sdj4"
+		BLK_DEVS[11]="/dev/sdl4"
+		BLK_DEVS[12]="/dev/sdb4"
+		BLK_DEVS[13]="/dev/sdi5"
+		BLK_DEVS[14]="/dev/sdj5"
+		BLK_DEVS[15]="/dev/sdl5"
+		BLK_DEVS[16]="/dev/sdb5"
+
+		BACKING_DEV=${BLK_DEVS[1]}
+		echo "preparing multiple devices, backing dev is $BACKING_DEV"
+		return 0
 	elif test "${LVM_TEST_PREFER_BRD-1}" = "1" && \
 	     test ! -d /sys/block/ram0 && \
 	     kernel_at_least 4 16 0 && \
@@ -902,31 +923,6 @@ prepare_devs() {
 		devsize=1024
 	fi
 
-	if test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
-		sg_raw -v -r 512 -o test_data.bin /dev/sg2  88 00 01 00 00 00 00 20 FF 01 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg2  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg4  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg5  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg7  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg10 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg11 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg13 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg14 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-
-		#BLK_DEVS[1]="/dev/sdi2"
-		#BLK_DEVS[2]="/dev/sdj2"
-		#BLK_DEVS[3]="/dev/sdl2"
-		#BLK_DEVS[4]="/dev/sdm2"
-		#BLK_DEVS[5]="/dev/sdi3"
-		#BLK_DEVS[6]="/dev/sdj3"
-		#BLK_DEVS[7]="/dev/sdl3"
-		#BLK_DEVS[8]="/dev/sdm3"
-
-		#for d in "${BLK_DEVS[@]}"; do
-		#	blkdiscard "$d" 2>/dev/null || true
-		#done
-	fi
-
 	touch DEVICES
 	prepare_backing_dev $(( n * devsize ))
 	# shift start of PV devices on /dev/loopXX by 1M
@@ -943,15 +939,33 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		DEVICES[$count]=$dev
 		count=$((  count + 1 ))
-		echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
-		#echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) > "$name.table"
-		#echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) >> /tmp/bbb.log
-		#echo $i >> /tmp/aaa.log
+		if [ -n "$LVM_TEST_BACKING_MULTI_DEVICES" ] && [ $n -le 16 ]; then
+			echo 0 $size linear "${BLK_DEVS[$count]}" $shift > "$name.table"
+		else
+			echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		fi
 		dmsetup create -u "TEST-$name" "$name" "$name.table" || touch CREATE_FAILED &
 		test -f CREATE_FAILED && break;
 	done
 	wait
 	finish_udev_transaction
+
+	if test -n "$LVM_TEST_BACKING_MULTI_DEVICES"; then
+		sg_raw -v -r 512 -o test_data.bin /dev/sg2  88 00 01 00 00 00 00 20 FF 01 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg2  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg4  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg5  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg7  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg10 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg11 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg13 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg14 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+
+		for d in "${BLK_DEVS[@]}"; do
+			dd if=/dev/zero of="$d" bs=1MB count=1000
+			#blkdiscard "$d" 2>/dev/null || true
+		done
+	fi
 
 	if test -f CREATE_FAILED -a -n "$LVM_TEST_BACKING_DEVICE"; then
 		LVM_TEST_BACKING_DEVICE=
