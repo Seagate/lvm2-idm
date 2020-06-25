@@ -55,6 +55,8 @@ rm LOCAL_DMEVENTD
 check lv_field $vg/3way seg_monitor "not monitored"
 check lv_field $vg/4way seg_monitor "not monitored"
 
+sleep 5
+
 lvchange --monitor y --verbose $vg/3way 2>&1 | tee lvchange.out
 pgrep -o dmeventd >LOCAL_DMEVENTD
 test -e LOCAL_CLVMD || not grep 'already monitored' lvchange.out
