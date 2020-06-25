@@ -913,18 +913,27 @@ prepare_devs() {
 		sg_raw -v -s 512 -i test_data.bin /dev/sg13 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg14 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 
-		#BLK_DEVS[1]="/dev/sdi2"
-		#BLK_DEVS[2]="/dev/sdj2"
-		#BLK_DEVS[3]="/dev/sdl2"
-		#BLK_DEVS[4]="/dev/sdm2"
-		#BLK_DEVS[5]="/dev/sdi3"
-		#BLK_DEVS[6]="/dev/sdj3"
-		#BLK_DEVS[7]="/dev/sdl3"
-		#BLK_DEVS[8]="/dev/sdm3"
+		BLK_DEVS[1]="/dev/sdi2"
+		BLK_DEVS[2]="/dev/sdj2"
+		BLK_DEVS[3]="/dev/sdl2"
+		BLK_DEVS[4]="/dev/sdb2"
+		BLK_DEVS[5]="/dev/sdi3"
+		BLK_DEVS[6]="/dev/sdj3"
+		BLK_DEVS[7]="/dev/sdl3"
+		BLK_DEVS[8]="/dev/sdb3"
+		BLK_DEVS[9]="/dev/sdi4"
+		BLK_DEVS[10]="/dev/sdj4"
+		BLK_DEVS[11]="/dev/sdl4"
+		BLK_DEVS[12]="/dev/sdb4"
+		BLK_DEVS[13]="/dev/sdi5"
+		BLK_DEVS[14]="/dev/sdj5"
+		BLK_DEVS[15]="/dev/sdl5"
+		BLK_DEVS[16]="/dev/sdb5"
 
-		#for d in "${BLK_DEVS[@]}"; do
-		#	blkdiscard "$d" 2>/dev/null || true
-		#done
+		for d in "${BLK_DEVS[@]}"; do
+			dd if=/dev/zero of="$d" bs=1MB count=100
+			#blkdiscard "$d" 2>/dev/null || true
+		done
 	fi
 
 	touch DEVICES
@@ -943,9 +952,9 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		DEVICES[$count]=$dev
 		count=$((  count + 1 ))
-		echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
-		#echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) > "$name.table"
-		#echo 0 $size linear "${BLK_DEVS[$count]}" $(( ( i - 1 ) * size + shift )) >> /tmp/bbb.log
+		#echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $shift > "$name.table"
+		echo 0 $size linear "${BLK_DEVS[$count]}" $shift >> /tmp/bbb.log
 		#echo $i >> /tmp/aaa.log
 		dmsetup create -u "TEST-$name" "$name" "$name.table" || touch CREATE_FAILED &
 		test -f CREATE_FAILED && break;
