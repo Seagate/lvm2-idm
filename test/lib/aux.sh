@@ -142,7 +142,7 @@ prepare_lvmlockd() {
 	if test -n "$LVM_TEST_LOCK_TYPE_SANLOCK"; then
 		# make check_lvmlockd_sanlock
 		echo "starting lvmlockd for sanlock"
-		lvmlockd -o 2
+		lvmlockd -o 2 -g sanlock
 
 	elif test -n "$LVM_TEST_LOCK_TYPE_DLM"; then
 		# make check_lvmlockd_dlm

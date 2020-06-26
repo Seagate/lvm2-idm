@@ -178,7 +178,7 @@ struct lockspace {
 	uint64_t host_id;
 	uint64_t free_lock_offset;	/* start search for free lock here */
 
-	const char *pvs_path[32];	/* for IDM */
+	char *pvs_path[32];	/* for IDM */
 
 	uint32_t start_client_id;	/* client_id that started the lockspace */
 	pthread_t thread;		/* makes synchronous lock requests */
