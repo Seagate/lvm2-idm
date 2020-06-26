@@ -564,6 +564,16 @@ static void free_lock(struct lock *lk)
 	pthread_mutex_unlock(&unused_struct_mutex);
 }
 
+static void free_ls_pvs_path(struct lockspace *ls)
+{
+	for (i = 0; i < 32; i++) {
+		if (ls->pvs_path[i]) {
+			free(ls->pvs_path[i]);
+			ls->pvs_path[i] = NULL;
+		}
+	}
+}
+
 static int setup_structs(void)
 {
 	struct action *act;
@@ -2860,6 +2870,17 @@ static int add_lockspace_thread(const char *ls_name,
 	pthread_mutex_lock(&lockspaces_mutex);
 	ls2 = find_lockspace_name(ls->name);
 	if (ls2) {
+
+		free_ls_pvs_path(ls2);
+		for (i = 0; i < 32; i++) {
+			if (!ls->pvs_path[i])
+				continue;
+
+			ls2->pvs_path[i] = strdup(ls->pvs_path[i]);
+			log_debug("update lockspace %s path[%d]=%s",
+				   ls->name, i, ls->pvs_path[i]);
+		}
+
 		if (ls2->thread_stop) {
 			log_debug("add_lockspace_thread %s exists and stopping", ls->name);
 			rv = -EAGAIN;
@@ -2872,6 +2893,7 @@ static int add_lockspace_thread(const char *ls_name,
 		}
 		pthread_mutex_unlock(&lockspaces_mutex);
 		free_resource(r);
+		free_ls_pvs_path(ls);
 		free(ls);
 		return rv;
 	}
@@ -2897,6 +2919,7 @@ static int add_lockspace_thread(const char *ls_name,
 		list_del(&ls->list);
 		pthread_mutex_unlock(&lockspaces_mutex);
 		free_resource(r);
+		free_ls_pvs_path(ls);
 		free(ls);
 		return rv;
 	}
@@ -3241,6 +3264,7 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 				if (ls->free_vg) {
 					/* In future we may need to free ls->actions here */
 					free_ls_resources(ls);
+					free_ls_pvs_path(ls);
 					free(ls);
 					free_count++;
 				}
