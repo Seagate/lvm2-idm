@@ -566,6 +566,8 @@ static void free_lock(struct lock *lk)
 
 static void free_ls_pvs_path(struct lockspace *ls)
 {
+	int i;
+
 	for (i = 0; i < 32; i++) {
 		if (ls->pvs_path[i]) {
 			free(ls->pvs_path[i]);
