@@ -975,7 +975,7 @@ BUILD_LOCKDIDM=$LOCKDIDM
 dnl -- Look for Seagate IDM libraries
 if test "$BUILD_LOCKDIDM" = yes; then
 	PKG_CHECK_MODULES(LOCKD_IDM, libseagate_ilm >= 0.1.0, [HAVE_LOCKD_IDM=yes], $bailout)
-	PKG_CHECK_MODULES(BLKID, blkid >= 2.24, [HAVE_LOCKD_IDM=yes], $bailout)
+	PKG_CHECK_MODULES(BLKID, blkid >= 2.23, [HAVE_LOCKD_IDM=yes], $bailout)
 	AC_DEFINE([LOCKDIDM_SUPPORT], 1, [Define to 1 to include code that uses lvmlockd IDM option.])
 	BUILD_LVMLOCKD=yes
 fi
@@ -1084,7 +1084,7 @@ AC_ARG_ENABLE(blkid_wiping,
 DEFAULT_USE_BLKID_WIPING=0
 if test "$BLKID_WIPING" != no; then
 	pkg_config_init
-	PKG_CHECK_MODULES(BLKID, blkid >= 2.24,
+	PKG_CHECK_MODULES(BLKID, blkid >= 2.23,
 			  [ BLKID_WIPING=yes
 			    BLKID_PC="blkid"
 			    DEFAULT_USE_BLKID_WIPING=1
@@ -1092,7 +1092,7 @@ if test "$BLKID_WIPING" != no; then
 			  ], [if test "$BLKID_WIPING" = maybe; then
 				BLKID_WIPING=no
 			   else
-			        AC_MSG_ERROR([bailing out... blkid library >= 2.24 is required])
+			        AC_MSG_ERROR([bailing out... blkid library >= 2.23 is required])
 			   fi])
 fi
 AC_MSG_CHECKING([whether to enable libblkid detection of signatures when wiping])
