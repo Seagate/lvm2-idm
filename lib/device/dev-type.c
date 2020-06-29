@@ -711,8 +711,7 @@ static int _wipe_known_signatures_with_blkid(struct device *dev, const char *nam
 						 BLKID_SUBLKS_TYPE |
 						 BLKID_SUBLKS_USAGE |
 						 BLKID_SUBLKS_VERSION |
-						 BLKID_SUBLKS_MAGIC |
-						 BLKID_SUBLKS_BADCSUM);
+						 BLKID_SUBLKS_MAGIC);
 
 	while (!blkid_do_probe(probe)) {
 		if ((r_wipe = _blkid_wipe(probe, dev, name, types_to_exclude, types_no_prompt, yes, force)) == 1) {

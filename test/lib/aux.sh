@@ -874,20 +874,20 @@ prepare_backing_dev() {
 	elif test -n "$LVM_TEST_BACKING_MULTI_DEVICES"; then
 		BLK_DEVS[1]="/dev/sdi2"
 		BLK_DEVS[2]="/dev/sdj2"
-		BLK_DEVS[3]="/dev/sdl2"
-		BLK_DEVS[4]="/dev/sdb2"
+		BLK_DEVS[3]="/dev/sdk2"
+		BLK_DEVS[4]="/dev/sdm2"
 		BLK_DEVS[5]="/dev/sdi3"
 		BLK_DEVS[6]="/dev/sdj3"
-		BLK_DEVS[7]="/dev/sdl3"
-		BLK_DEVS[8]="/dev/sdb3"
+		BLK_DEVS[7]="/dev/sdk3"
+		BLK_DEVS[8]="/dev/sdm3"
 		BLK_DEVS[9]="/dev/sdi4"
 		BLK_DEVS[10]="/dev/sdj4"
-		BLK_DEVS[11]="/dev/sdl4"
-		BLK_DEVS[12]="/dev/sdb4"
+		BLK_DEVS[11]="/dev/sdk4"
+		BLK_DEVS[12]="/dev/sdm4"
 		BLK_DEVS[13]="/dev/sdi5"
 		BLK_DEVS[14]="/dev/sdj5"
-		BLK_DEVS[15]="/dev/sdl5"
-		BLK_DEVS[16]="/dev/sdb5"
+		BLK_DEVS[15]="/dev/sdk5"
+		BLK_DEVS[16]="/dev/sdm5"
 
 		BACKING_DEV=${BLK_DEVS[1]}
 		echo "preparing multiple devices, backing dev is $BACKING_DEV"
@@ -958,7 +958,7 @@ prepare_devs() {
 		sg_raw -v -s 512 -i test_data.bin /dev/sg7  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg10 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg11 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
-		sg_raw -v -s 512 -i test_data.bin /dev/sg13 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
+		sg_raw -v -s 512 -i test_data.bin /dev/sg12 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg14 8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 
 		for d in "${BLK_DEVS[@]}"; do

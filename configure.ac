@@ -1254,7 +1254,7 @@ AC_ARG_ENABLE(blkid_wiping,
 DEFAULT_USE_BLKID_WIPING=0
 if test "$BLKID_WIPING" != no; then
 	pkg_config_init
-	PKG_CHECK_MODULES(BLKID, blkid >= 2.24,
+	PKG_CHECK_MODULES(BLKID, blkid >= 2.23,
 			  [ BLKID_WIPING=yes
 			    BLKID_PC="blkid"
 			    DEFAULT_USE_BLKID_WIPING=1
@@ -1262,7 +1262,7 @@ if test "$BLKID_WIPING" != no; then
 			  ], [if test "$BLKID_WIPING" = maybe; then
 				BLKID_WIPING=no
 			   else
-			        AC_MSG_ERROR([bailing out... blkid library >= 2.24 is required])
+			        AC_MSG_ERROR([bailing out... blkid library >= 2.23 is required])
 			   fi])
 fi
 AC_MSG_CHECKING([whether to enable libblkid detection of signatures when wiping])
