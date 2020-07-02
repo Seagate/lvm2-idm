@@ -939,7 +939,7 @@ prepare_devs() {
 		local dev="$DM_DEV_DIR/mapper/$name"
 		DEVICES[$count]=$dev
 		count=$((  count + 1 ))
-		if [ -n "$LVM_TEST_BACKING_MULTI_DEVICES" ] && [ $n -le 16 ]; then
+		if [ -n "$LVM_TEST_BACKING_MULTI_DEVICES" ] && [ $n -le ${#BLK_DEVS[@]} ]; then
 			echo 0 $size linear "${BLK_DEVS[$count]}" $shift > "$name.table"
 		else
 			echo 0 $size linear "$BACKING_DEV" $(( ( i - 1 ) * size + shift )) > "$name.table"
