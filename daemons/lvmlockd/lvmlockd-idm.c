@@ -340,7 +340,7 @@ static int lm_idm_generate_global_list(void)
 		if (ret < 0)
 			continue;
 
-		if (strcmp("1548", value))
+		if (strcmp("2229", value))
 			continue;
 
 		ret = lm_idm_scsi_find_block_path(dev_path);
