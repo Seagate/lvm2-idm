@@ -950,7 +950,8 @@ prepare_devs() {
 	wait
 	finish_udev_transaction
 
-	if test -n "$LVM_TEST_LOCK_TYPE_IDM"; then
+	if test -n "$LVM_TEST_LOCK_TYPE_IDM" &&
+	   test -z "$LVM_TEST_MULTI_HOST_IDM"; then
 		sg_raw -v -r 512 -o test_data.bin /dev/sg2  88 00 01 00 00 00 00 20 FF 01 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg2  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
 		sg_raw -v -s 512 -i test_data.bin /dev/sg4  8E 00 FF 00 00 00 00 00 00 00 00 00 00 01 00 00
