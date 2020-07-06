@@ -18,11 +18,14 @@ SKIP_WITH_LVMPOLLD=1
 [ -z "$LVM_TEST_LOCK_TYPE_IDM" ] && skip;
 [ -z "$LVM_TEST_FAILURE_INJECTION" ] && skip;
 
-BLK1=/dev/sdk2
-BLK2=/dev/sdm2
+aux extend_filter_LVMTEST "a|/dev/sdb*|" "a|/dev/sdj*|"
+aux lvmconf "devices/allow_changes_with_duplicate_pvs = 1"
 
-DISK1="${BLK1%?}"
-DISK2="${BLK2%?}"
+BLK1=/dev/sdb2
+BLK2=/dev/sdj2
+
+DISK1="$(basename -- ${BLK1%?})"
+DISK2="$(basename -- ${BLK2%?})"
 
 # Cleanup devices
 dd if=/dev/zero of="$BLK1" bs=1MB count=1000
@@ -32,23 +35,15 @@ wipefs -a "$BLK2" 2>/dev/null || true
 
 vgcreate --shared --locktype idm TESTVG1 $BLK1 $BLK2
 
+# Create new logic volume
+lvcreate -a ey --zero n -l 1 -n foo1 TESTVG1
+
 # Emulate fabric failure
 echo 1 > /sys/block/$DISK1/device/delete
+echo 1 > /sys/block/$DISK2/device/delete
 
 # Fail to create new logic volume
-not lvcreate -a n --zero n -l 1 -n foo TESTVG1
-
-# Rescan drives so can access sdk again
-echo "- - -" > /sys/class/scsi_host/host0/scan
-
-# Create new logic volume
-lvcreate -a n --zero n -l 1 -n foo TESTVG1
-
-# Activate logic volume
-lvchange TESTVG1/foo -a y
-
-# Emulate fabric failure
-echo 1 > /sys/block/$DISK1/device/delete
+not lvcreate -a n --zero n -l 1 -n foo2 TESTVG1
 
 # Wait for lock time out caused by drive failure
 sleep 70
@@ -59,7 +54,5 @@ lvmlockctl --drop TESTVG1
 # Rescan drives so can access sdk again
 echo "- - -" > /sys/class/scsi_host/host0/scan
 
-vgremove -g TESTVG1
-
-pvremove /dev/$BLK1
-pvremove /dev/$BLK2
+vgchange --lock-start
+vgremove -f TESTVG1
