@@ -504,7 +504,6 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	char uuid_str[32];
 	uint64_t timestamp;
 	int reset_vb = 0;
 	int rv, i;
