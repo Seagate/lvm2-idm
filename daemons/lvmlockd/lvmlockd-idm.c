@@ -798,7 +798,7 @@ int lm_is_running_idm(void)
 	int sock, rv;
 
 	if (daemon_test)
-		return gl_use_sanlock;
+		return gl_use_idm;
 
 	rv = ilm_connect(&sock);
 	if (rv < 0) {
