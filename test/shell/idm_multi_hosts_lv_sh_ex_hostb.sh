@@ -19,14 +19,20 @@ vgdisplay
 i=0
 for d in "${BLKS[@]}"; do
         i=$((i+1))
-	lvchange -a sy TESTVG$i/foo
+	for j in {1..20}
+	do
+		lvchange -a sy TESTVG$i/foo$j
+	done
 done
 
 i=0
 for d in "${BLKS[@]}"; do
         i=$((i+1))
-	lvchange -a ey TESTVG$i/foo
-	lvchange -a n TESTVG$i/foo
+	for j in {1..20}
+	do
+		lvchange -a ey TESTVG$i/foo$j
+		lvchange -a n TESTVG$i/foo$j
+	done
 done
 
 i=0

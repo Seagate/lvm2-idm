@@ -20,7 +20,12 @@ done
 i=0
 for d in "${BLKS[@]}"; do
 	i=$((i+1))
-	dmsetup remove /dev/TESTVG$i/foo || true
+
+	for j in {1..20}
+	do
+		dmsetup remove /dev/TESTVG$i/foo$j || true
+	done
+
 	dmsetup remove /dev/TESTVG$i || true
 done
 
@@ -28,18 +33,29 @@ i=0
 for d in "${BLKS[@]}"; do
 	i=$((i+1))
 	vgcreate --shared --locktype idm TESTVG$i $d
-	lvcreate -a n --zero n -l 1 -n foo TESTVG$i
-	lvchange -a sy TESTVG$i/foo
+
+	for j in {1..20}
+	do
+		lvcreate -a n --zero n -l 1 -n foo$j TESTVG$i
+	done
 done
 
 i=0
 for d in "${BLKS[@]}"; do
 	i=$((i+1))
-	lvchange -a ey TESTVG$i/foo
+
+	for j in {1..20}
+	do
+		lvchange -a ey TESTVG$i/foo$j
+	done
 done
 
 i=0
 for d in "${BLKS[@]}"; do
 	i=$((i+1))
-	lvchange -a n TESTVG$i/foo
+
+	for j in {1..20}
+	do
+		lvchange -a n TESTVG$i/foo$j
+	done
 done
