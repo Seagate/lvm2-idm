@@ -983,6 +983,7 @@ int vgcreate_params_set_from_args(struct cmd_context *cmd,
 
 	case LOCK_TYPE_SANLOCK:
 	case LOCK_TYPE_DLM:
+	case LOCK_TYPE_IDM:
 		if (!use_lvmlockd) {
 			log_error("Using a shared lock type requires lvmlockd.");
 			return 0;

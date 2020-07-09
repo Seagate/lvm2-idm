@@ -235,14 +235,14 @@ static int lm_idm_scsi_search_partition(char *dev)
 
 	pr = blkid_new_probe_from_filename(dev);
 	if (!pr) {
-		log_error("%s: failed to create a new libblkid probe\n", dev);
+		log_error("%s: failed to create a new libblkid probe", dev);
 		return -1;
 	}
 
 	/* Binary interface */
 	ls = blkid_probe_get_partitions(pr);
 	if (!ls) {
-		log_error("%s: failed to read partitions\n", dev);
+		log_error("%s: failed to read partitions", dev);
 		return -1;
 	}
 
@@ -251,7 +251,7 @@ static int lm_idm_scsi_search_partition(char *dev)
 	 */
 	root_tab = blkid_partlist_get_table(ls);
 	if (!root_tab) {
-		log_error("%s: does not contains any known partition table\n", dev);
+		log_error("%s: does not contains any known partition table", dev);
 		return -1;
 	}
 
@@ -268,7 +268,7 @@ static int lm_idm_scsi_search_partition(char *dev)
 
 		p = blkid_partition_get_name(par);
 		if (p) {
-			log_error("partition name='%s'\n", p);
+			log_debug("partition name='%s'", p);
 
 			if (!strcmp(p, "propeller"))
 				found = blkid_partition_get_partno(par);
@@ -327,7 +327,7 @@ static int lm_idm_generate_global_list(void)
 
 	num = scandir(devs_path, &namelist, lm_idm_scsi_dir_select, NULL);
 	if (num < 0) {  /* scsi mid level may not be loaded */
-		log_error("Attached devices: none\n");
+		log_error("Attached devices: none");
 		return -1;
 	}
 
@@ -340,7 +340,7 @@ static int lm_idm_generate_global_list(void)
 		if (ret < 0)
 			continue;
 
-		if (strcmp("2229", value))
+		if (strcmp("1759", value))
 			continue;
 
 		ret = lm_idm_scsi_find_block_path(dev_path);
@@ -499,12 +499,11 @@ int lm_rem_resource_idm(struct lockspace *ls, struct resource *r)
 }
 
 int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
-		struct val_blk *vb_out, char *lv_uuid, char *pvs_path[32],
-		int adopt)
+		struct val_blk *vb_out, char *lv_uuid,
+		char *pvs_path[MAX_PVS_PATH_NUM], int adopt)
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	char uuid_str[32];
 	uint64_t timestamp;
 	int reset_vb = 0;
 	int rv, i;
@@ -543,12 +542,16 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			return -EIO;
 		}
 
-		rdi->op.drive_num = glb_op.drive_num;
-		for (i = 0; i < glb_op.drive_num; i++)
-			rdi->op.drives[i] = glb_op.drives[i];
+		for (i = 0; i < glb_op.drive_num; i++) {
+			/* Don't exceed to MAX_PVS_PATH_NUM */
+			if (i >= MAX_PVS_PATH_NUM)
+				break;
 
+			rdi->op.drives[i] = glb_op.drives[i];
+			rdi->op.drive_num++;
+		}
 	} else if (r->type == LD_RT_VG) {
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!ls->pvs_path[i])
 				continue;
 
@@ -556,7 +559,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			rdi->op.drive_num++;
 		}
 	} else if (r->type == LD_RT_LV) {
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!pvs_path[i])
 				continue;
 
@@ -798,11 +801,11 @@ int lm_is_running_idm(void)
 	int sock, rv;
 
 	if (daemon_test)
-		return gl_use_sanlock;
+		return gl_use_idm;
 
 	rv = ilm_connect(&sock);
 	if (rv < 0) {
-		log_error("running_idm: rv=%d", rv);
+		log_error("Fail to connect IDM lock manager: rv=%d", rv);
 		return 0;
 	}
 

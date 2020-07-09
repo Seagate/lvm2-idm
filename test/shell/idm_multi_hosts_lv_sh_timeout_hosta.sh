@@ -13,7 +13,7 @@ BLKS=("/dev/sdb2" "/dev/sdb3" "/dev/sdb4" "/dev/sdb5"
       "/dev/sdd2" "/dev/sdd3" "/dev/sdd4" "/dev/sdd5")
 
 for d in "${BLKS[@]}"; do
-	dd if=/dev/zero of="$d" bs=1MB count=1000
+	dd if=/dev/zero of="$d" bs=1MB count=1000 || true
 	wipefs -a "$d" 2>/dev/null || true
 done
 
