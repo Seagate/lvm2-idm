@@ -21,6 +21,8 @@
 #define LVM_LS_PREFIX      "lvm_"           /* ls name is prefix + vg_name */
 /* global lockspace name for sanlock is a vg name */
 
+#define MAX_PVS_PATH_NUM 32
+
 /* lock manager types */
 enum {
 	LD_LM_NONE = 0,

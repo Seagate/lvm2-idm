@@ -510,7 +510,7 @@ static void free_action(struct action *act)
 {
 	int i;
 
-	for (i = 0; i < 32; i++) {
+	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 		if (!act->pvs_path[i])
 			continue;
 
@@ -568,7 +568,7 @@ static void free_ls_pvs_path(struct lockspace *ls)
 {
 	int i;
 
-	for (i = 0; i < 32; i++) {
+	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 		if (ls->pvs_path[i]) {
 			free(ls->pvs_path[i]);
 			ls->pvs_path[i] = NULL;
@@ -2849,7 +2849,7 @@ static int add_lockspace_thread(const char *ls_name,
 	if (act) {
 		ls->host_id = act->host_id;
 
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!act->pvs_path[i])
 				continue;
 
@@ -2874,7 +2874,7 @@ static int add_lockspace_thread(const char *ls_name,
 	if (ls2) {
 
 		free_ls_pvs_path(ls2);
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!ls->pvs_path[i])
 				continue;
 
@@ -4585,7 +4585,7 @@ static void client_recv_action(struct client *cl)
 	const char *vg_uuid;
 	const char *vg_sysid;
 	const char *str;
-	const char *pvs_path[32];
+	const char *pvs_path[MAX_PVS_PATH_NUM];
 	char buf[10];
 	int64_t val;
 	uint32_t opts = 0;
@@ -4675,7 +4675,7 @@ static void client_recv_action(struct client *cl)
 
 	memset(pvs_path, 0x0, sizeof(pvs_path));
 
-	for (i = 0; i < 32; i++) {
+	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 		sprintf(buf, "path[%d]", i);
 		pvs_path[i] = daemon_request_str(req, buf, NULL);
 	}
@@ -4713,7 +4713,7 @@ static void client_recv_action(struct client *cl)
 	act->flags = opts;
 	act->lm_type = lm;
 
-	for (i = 0; i < 32; i++) {
+	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 		if (!pvs_path[i] || !strcmp(pvs_path[i], "none"))
 			continue;
 

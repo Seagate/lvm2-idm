@@ -499,8 +499,8 @@ int lm_rem_resource_idm(struct lockspace *ls, struct resource *r)
 }
 
 int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
-		struct val_blk *vb_out, char *lv_uuid, char *pvs_path[32],
-		int adopt)
+		struct val_blk *vb_out, char *lv_uuid,
+		char *pvs_path[MAX_PVS_PATH_NUM], int adopt)
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
@@ -543,12 +543,16 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			return -EIO;
 		}
 
-		rdi->op.drive_num = glb_op.drive_num;
-		for (i = 0; i < glb_op.drive_num; i++)
-			rdi->op.drives[i] = glb_op.drives[i];
+		for (i = 0; i < glb_op.drive_num; i++) {
+			/* Don't exceed to MAX_PVS_PATH_NUM */
+			if (i >= MAX_PVS_PATH_NUM)
+				break;
 
+			rdi->op.drives[i] = glb_op.drives[i];
+			rdi->op.drive_num++;
+		}
 	} else if (r->type == LD_RT_VG) {
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!ls->pvs_path[i])
 				continue;
 
@@ -556,7 +560,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			rdi->op.drive_num++;
 		}
 	} else if (r->type == LD_RT_LV) {
-		for (i = 0; i < 32; i++) {
+		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
 			if (!pvs_path[i])
 				continue;
 
