@@ -235,14 +235,14 @@ static int lm_idm_scsi_search_partition(char *dev)
 
 	pr = blkid_new_probe_from_filename(dev);
 	if (!pr) {
-		log_error("%s: failed to create a new libblkid probe\n", dev);
+		log_error("%s: failed to create a new libblkid probe", dev);
 		return -1;
 	}
 
 	/* Binary interface */
 	ls = blkid_probe_get_partitions(pr);
 	if (!ls) {
-		log_error("%s: failed to read partitions\n", dev);
+		log_error("%s: failed to read partitions", dev);
 		return -1;
 	}
 
@@ -251,7 +251,7 @@ static int lm_idm_scsi_search_partition(char *dev)
 	 */
 	root_tab = blkid_partlist_get_table(ls);
 	if (!root_tab) {
-		log_error("%s: does not contains any known partition table\n", dev);
+		log_error("%s: does not contains any known partition table", dev);
 		return -1;
 	}
 
@@ -268,7 +268,7 @@ static int lm_idm_scsi_search_partition(char *dev)
 
 		p = blkid_partition_get_name(par);
 		if (p) {
-			log_error("partition name='%s'\n", p);
+			log_debug("partition name='%s'", p);
 
 			if (!strcmp(p, "propeller"))
 				found = blkid_partition_get_partno(par);
@@ -327,7 +327,7 @@ static int lm_idm_generate_global_list(void)
 
 	num = scandir(devs_path, &namelist, lm_idm_scsi_dir_select, NULL);
 	if (num < 0) {  /* scsi mid level may not be loaded */
-		log_error("Attached devices: none\n");
+		log_error("Attached devices: none");
 		return -1;
 	}
 
@@ -806,7 +806,7 @@ int lm_is_running_idm(void)
 
 	rv = ilm_connect(&sock);
 	if (rv < 0) {
-		log_error("running_idm: rv=%d", rv);
+		log_error("Fail to connect IDM lock manager: rv=%d", rv);
 		return 0;
 	}
 
