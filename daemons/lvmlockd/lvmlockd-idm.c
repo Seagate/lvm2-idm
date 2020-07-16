@@ -70,12 +70,12 @@ static uint64_t _read_utc_time(void)
 
 	gmtime_r(&cur_time.tv_sec, &time_info);
 
-	utc  = time_info.tm_sec & 0xff;
-	utc |= (time_info.tm_min  & 0xff) < 8;
-	utc |= (time_info.tm_hour & 0xff) < 16;
-	utc |= (time_info.tm_mday & 0xff) < 24;
-	utc |= (time_info.tm_mon  & 0xff) < 32;
-	utc |= (time_info.tm_year & 0xffff) < 40;
+	utc = (time_info.tm_sec & 0xff) |
+	      ((time_info.tm_min  & 0xff) << 8) |
+	      ((time_info.tm_hour & 0xff) << 16) |
+	      ((time_info.tm_mday & 0xff) << 24) |
+	      ((time_info.tm_mon  & 0xff) << 32) |
+	      ((time_info.tm_year & 0xffff) << 40);
 
 	return utc;
 }
@@ -617,6 +617,8 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 				  ls->name, r->name, rv);
 			reset_vb = 1;
 
+			/* Reset timestamp */
+			rdi->vb_timestamp = 0;
 		/*
 		 * If timestamp is -1, means an IDM is broken is IDM lock
 		 * manager, for this case, let's use safe way to notify up
@@ -631,6 +633,8 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			log_error("S %s R %s lock_idm get_lvb mismatch %lu %lu",
 				  ls->name, r->name,
 				  rdi->vb_timestamp, timestamp);
+
+			rdi->vb_timestamp = timestamp;
 			reset_vb = 1;
 		}
 
@@ -638,8 +642,6 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			memset(rdi->vb, 0, sizeof(struct val_blk));
 			memset(vb_out, 0, sizeof(struct val_blk));
 
-			/* Reset timestamp */
-			rdi->vb_timestamp = 0;
 
 			/*
 			 * The lock is still acquired, the vb values
@@ -739,6 +741,9 @@ int lm_unlock_idm(struct lockspace *ls, struct resource *r,
 
 		rdi->vb_timestamp = _read_utc_time();
 
+		log_debug("S %s R %s unlock_idm set timestamp %lu",
+			  ls->name, r->name, rdi->vb_timestamp);
+
 		rv = ilm_write_lvb(lmi->sock, &rdi->id,
 				   (char *)&rdi->vb_timestamp, sizeof(uint64_t));
 		if (rv < 0) {
@@ -755,7 +760,6 @@ int lm_unlock_idm(struct lockspace *ls, struct resource *r,
 	if (rv < 0)
 		log_error("S %s R %s unlock_idm error %d", ls->name, r->name, rv);
 
-	lm_rem_resource_idm(ls, r);
 	return rv;
 }
 
