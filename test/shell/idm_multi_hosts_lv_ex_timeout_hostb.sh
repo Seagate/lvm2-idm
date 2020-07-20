@@ -5,10 +5,7 @@ SKIP_WITH_LVMPOLLD=1
 [ -z "$LVM_TEST_LOCK_TYPE_IDM" ] && skip;
 [ -z "$LVM_TEST_MULTI_HOST_IDM" ] && skip;
 
-aux extend_filter_LVMTEST "a|/dev/sdb*|" "a|/dev/sdc*|" "a|/dev/sdd*|"
-aux lvmconf "devices/allow_changes_with_duplicate_pvs = 1"
-
-BLKS=("/dev/sdb2" "/dev/sdb3" "/dev/sdb4" "/dev/sdb5")
+. lib/idm_setup
 
 vgchange --lock-start
 

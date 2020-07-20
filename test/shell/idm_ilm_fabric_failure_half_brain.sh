@@ -18,20 +18,11 @@ SKIP_WITH_LVMPOLLD=1
 [ -z "$LVM_TEST_LOCK_TYPE_IDM" ] && skip;
 [ -z "$LVM_TEST_FAILURE_INJECTION" ] && skip;
 
-aux extend_filter_LVMTEST "a|/dev/sdb*|" "a|/dev/sdj*|"
-aux lvmconf "devices/allow_changes_with_duplicate_pvs = 1"
-
-BLK1=/dev/sdb2
-BLK2=/dev/sdc2
+. lib/idm_setup
+. lib/idm_cleanup
 
 DISK1="$(basename -- ${BLK1%?})"
 DISK2="$(basename -- ${BLK2%?})"
-
-# Cleanup devices
-dd if=/dev/zero of="$BLK1" bs=1MB count=1000
-wipefs -a "$BLK1" 2>/dev/null || true
-dd if=/dev/zero of="$BLK2" bs=1MB count=1000
-wipefs -a "$BLK2" 2>/dev/null || true
 
 vgcreate --shared --locktype idm TESTVG1 $BLK1 $BLK2
 
