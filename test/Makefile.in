@@ -255,7 +255,7 @@ LIB_LVMLOCKD_CONF = \
 LIB_LOCAL = paths runner
 LIB_NOT = not
 LIB_LINK_NOT = invalid fail should
-LIB_SHARED = check aux inittest utils get lvm-wrapper
+LIB_SHARED = check aux inittest utils get lvm-wrapper idm_setup idm_cleanup
 LIB_IDM_INJECT_FAILURE = idm_inject_failure
 
 install: .tests-stamp lib/paths-installed

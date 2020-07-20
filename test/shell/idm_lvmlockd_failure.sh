@@ -18,11 +18,8 @@ SKIP_WITH_LVMPOLLD=1
 [ -z "$LVM_TEST_LOCK_TYPE_IDM" ] && skip;
 [ -z "$LVM_TEST_FAILURE_INJECTION" ] && skip;
 
-aux extend_filter_LVMTEST "a|/dev/sdb*|" "a|/dev/sdj*|"
-aux lvmconf "devices/allow_changes_with_duplicate_pvs = 1"
-
-BLK1=/dev/sdb2
-BLK2=/dev/sdc2
+. lib/idm_setup
+. lib/idm_cleanup
 
 DISK1="$(basename -- ${BLK1%?})"
 DISK2="$(basename -- ${BLK2%?})"
