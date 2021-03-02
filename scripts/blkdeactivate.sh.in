@@ -70,6 +70,8 @@ DO_UMOUNT=0
 
 # Deactivate each LV separately by default (not the whole VG).
 LVM_DO_WHOLE_VG=0
+# Forcily deactivate the whole VG by wiping DM table
+LVM_DO_FORCE_VG=0
 # Do not retry LV deactivation by default.
 LVM_CONFIG="activation{retry_deactivation=0}"
 
@@ -134,6 +136,7 @@ usage() {
 	echo "    LVM_OPTIONS:"
 	echo "      retry           retry removal several times in case of failure"
 	echo "      wholevg         deactivate the whole VG when processing an LV"
+	echo "      forcevg         force deactivate (wipe_table) the whole VG"
 	echo "    MDRAID_OPTIONS:"
 	echo "      wait            wait for resync, recovery or reshape to complete first"
 	echo "    MPATH_OPTIONS:"
@@ -282,6 +285,49 @@ deactivate_lvm () {
 	fi
 }
 
+is_top_level_lv() {
+	is_top_level_device && return 0
+	skip=1
+	while $LSBLK_READ; do
+		# First line self device
+		test "$skip" -eq 1 && skip=0 && continue
+
+		# not top device but top lv in this VG, return 0
+		test "$devtype" != "lvm" && return 0
+		test ${name:0:${#DM_VG_NAME}+1} != $DM_VG_NAME"-" && return 0
+		test ${name:0:${#DM_VG_NAME}+2} = $DM_VG_NAME"--" && return 0
+		# the same vg, hidden lv
+		test ${name:0:${#DM_VG_NAME}+1} = $DM_VG_NAME"-" && return 1
+	done <<< "$($LSBLK $DEV_DIR/$kname)"
+}
+
+deactivate_vg () {
+	local VG_NAME; local LV_NAME;
+	local DM_VG_NAME; local DM_LV_NAME;
+	local LVS;
+	local skip_disablequeue=0
+
+	VG_NAME=$name
+	DM_VG_NAME=${name/-/--}
+	test -z "${SKIP_VG_LIST["$DM_VG_NAME"]}" || return 1
+	test "$LVM_AVAILABLE" -eq 0 && {
+		add_device_to_skip_list
+		return 1
+	}
+
+	# Replace DM table with 'error' target.
+	# The reason for not using command "lvchange" ahead if because it may hang
+	# for a long time for the failed device.
+	echo -n "  [LVM]: force deactivating Logical Volumes for $VG_NAME... "
+	"$DMSETUP" info -c -S "uuid=~LVM && vgname=$VG_NAME && lv_layer=\"\"" \
+		-o name --noheadings | xargs "$DMSETUP" wipe_table
+	if [ "$?" = "0" ]; then
+		echo "wipe table done"
+	else
+		echo "wipe table failed" && return 1
+	fi
+}
+
 deactivate_md () {
 	local xname
 	xname=$(printf "%s" "$name")
@@ -333,7 +379,9 @@ deactivate () {
 	# deactivate_holders first to recursively deactivate any existing    #
 	# holders it might have before deactivating the device it processes. #
 	######################################################################
-	if test "$devtype" = "lvm"; then
+	if test "$devtype" = "vg"; then
+		deactivate_vg
+	elif test "$devtype" = "lvm"; then
 		deactivate_lvm
 	elif test "${kname:0:3}" = "dm-"; then
 		deactivate_dm
@@ -395,14 +443,17 @@ deactivate_all() {
 		##################################
 
 		while test $# -ne 0; do
-			# Unmount all relevant mountpoints first
-			while $LSBLK_READ; do
-				device_umount
-			done <<< "$($LSBLK "$1" | $SORT_MNT)"
+			# Force deactivate the whole vg
+			if test $LVM_DO_FORCE_VG -ne 0; then
+				$LSBLK_READ <<< "vg $1 $1"
+				deactivate || return 1
+			elif -b "$1"; then
+				# Single dm device tree deactivation.
+				# Unmount all relevant mountpoints first
+				while $LSBLK_READ; do
+					device_umount
+				done <<< "$($LSBLK "$1" | $SORT_MNT)"
 
-			# Do deactivate
-			# Single dm device tree deactivation.
-			if test -b "$1"; then
 				$LSBLK_READ <<< "$($LSBLK --nodeps "$1")"
 
 				# check if the device is not on the skip list already
@@ -444,6 +495,7 @@ get_lvmopts() {
 			"") ;;
 			"retry") LVM_CONFIG="activation{retry_deactivation=1}" ;;
 			"wholevg") LVM_DO_WHOLE_VG=1 ;;
+			"forcevg") LVM_DO_FORCE_VG=1 ;;
 			*) echo "$opt: unknown LVM option"
 		esac
 	done
