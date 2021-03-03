@@ -1820,7 +1820,9 @@ SYSCONFDIR="$(eval echo $(eval echo $sysconfdir))"
 
 SBINDIR="$(eval echo $(eval echo $sbindir))"
 LVM_PATH="$SBINDIR/lvm"
+LVM_DIR="$SBINDIR/"
 AC_DEFINE_UNQUOTED(LVM_PATH, ["$LVM_PATH"], [Path to lvm binary.])
+AC_DEFINE_UNQUOTED(LVM_DIR, ["$LVM_DIR"], [Path to lvm binary dir.])
 
 USRSBINDIR="$(eval echo $(eval echo $usrsbindir))"
 CLVMD_PATH="$USRSBINDIR/clvmd"

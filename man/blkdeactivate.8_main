@@ -51,6 +51,12 @@ Retry removal several times in case of failure.
 Deactivate the whole LVM Volume Group when processing a Logical Volume.
 Deactivating the Volume Group as a whole is quicker than deactivating
 each Logical Volume separately.
+.IP \fIforcevg\fP
+Forcibly deactivate the whole LVM Volume Group as soon as possible.
+The primary job of this option is to flush the in-flight I/O operation
+and then replace the LV's device-mapper table with 'error' target.
+This is accomplished by using command "dmsetup wipe_table".
+When this option is used, any other options (e.g. "-d retry|force", "-u") will be ignored.
 .RE
 .TP
 .BR -m ", " --mpathoptions \ \fImpath_options\fP
@@ -106,6 +112,12 @@ Volume Group at once when processing an LVM Logical Volume.
 .BR
 #
 .B blkdeactivate -u -d retry -l wholevg
+.BR
+.P
+Forcibly deactivate the whole vg.
+.BR
+#
+.B blkdeactivate -l forcevg testvg
 .BR
 .P
 Deactivate all supported block devices found in the system. If the deactivation
