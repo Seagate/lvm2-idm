@@ -1,6 +1,5 @@
 /*
- * Copyright (C) 2020-2021 Seagate
- * Copyright (C) 2020-2021 Linaro Ltd
+ * Copyright (C) 2020-2021 Seagate Ltd.
  *
  * This file is part of LVM2.
  *
@@ -16,6 +15,7 @@
 
 #include "daemon-server.h"
 #include "lib/mm/xlate.h"
+#include "base/memory/zalloc.h"
 
 #include "lvmlockd-internal.h"
 #include "daemons/lvmlockd/lvmlockd-client.h"
@@ -32,15 +32,7 @@
 #include <sys/sysmacros.h>
 #include <time.h>
 
-#define VG_LOCK_ARGS_MAJOR 1
-#define VG_LOCK_ARGS_MINOR 0
-#define VG_LOCK_ARGS_PATCH 0
-
-#define LV_LOCK_ARGS_MAJOR 1
-#define LV_LOCK_ARGS_MINOR 0
-#define LV_LOCK_ARGS_PATCH 0
-
-#define MAX_VERSION 16
+#define IDM_TIMEOUT	60000	/* unit: millisecond, 60 seconds */
 
 /*
  * Each lockspace thread has its own In-Drive Mutex (IDM) lock manager's
@@ -60,46 +52,30 @@ struct rd_idm {
 	struct val_blk *vb;
 };
 
-static uint64_t _read_utc_time(void)
+int lm_data_size_idm(void)
+{
+	return sizeof(struct rd_idm);
+}
+
+static uint64_t read_utc_time(void)
 {
 	struct timeval cur_time;
 	struct tm time_info;
 	uint64_t utc;
 
 	gettimeofday(&cur_time, NULL);
-
 	gmtime_r(&cur_time.tv_sec, &time_info);
-
-	utc = (time_info.tm_sec & 0xff) |
-	      ((time_info.tm_min  & 0xff) << 8) |
-	      ((time_info.tm_hour & 0xff) << 16) |
-	      ((time_info.tm_mday & 0xff) << 24) |
-	      ((time_info.tm_mon  & 0xff) << 32) |
-	      ((time_info.tm_year & 0xffff) << 40);
+	utc = ((uint64_t)(time_info.tm_sec) & 0xff) |
+	      ((uint64_t)(time_info.tm_min  & 0xff) << 8) |
+	      ((uint64_t)(time_info.tm_hour & 0xff) << 16) |
+	      ((uint64_t)(time_info.tm_mday & 0xff) << 24) |
+	      ((uint64_t)(time_info.tm_mon  & 0xff) << 32) |
+	      ((uint64_t)(time_info.tm_year & 0xffff) << 40);
 
 	return utc;
 }
 
-static int _to_idm_mode(int ld_mode, uint32_t *mode)
-{
-	int rv = 0;
-
-	switch (ld_mode) {
-	case LD_LK_EX:
-		*mode = IDM_MODE_EXCLUSIVE;
-		break;
-	case LD_LK_SH:
-		*mode = IDM_MODE_SHAREABLE;
-		break;
-	default:
-		rv = -1;
-		break;
-	};
-
-	return rv;
-}
-
-static int _uuid_read_format(char *uuid_str, const char *buffer)
+static int uuid_read_format(char *uuid_str, const char *buffer)
 {
 	int out = 0;
 
@@ -132,11 +108,10 @@ static int _uuid_read_format(char *uuid_str, const char *buffer)
 #define SYSFS_ROOT		"/sys"
 #define BUS_SCSI_DEVS		"/bus/scsi/devices"
 
-static char blk_str[PATH_MAX];
+static char blk_dev[PATH_MAX];
+static struct idm_lock_op glb_lock_op;
 
-static struct idm_lock_op glb_op;
-
-static int lm_idm_scsi_dir_select(const struct dirent *s)
+static int lm_idm_scsi_directory_select(const struct dirent *s)
 {
 	/* Following no longer needed but leave for early lk 2.6 series */
 	if (strstr(s->d_name, "mt"))
@@ -173,19 +148,19 @@ static int lm_idm_scsi_block_select(const struct dirent *s)
 	return 0;
 }
 
-static int lm_idm_scsi_find_block_path(const char *path)
+static int lm_idm_scsi_find_block_dirctory(const char *path)
 {
-        int num, i;
-        struct dirent **namelist;
+        int dir_num, i;
+        struct dirent **dir_list;
 
-        num = scandir(path, &namelist, lm_idm_scsi_block_select, NULL);
-        if (num < 0)
+        dir_num = scandir(path, &dir_list, lm_idm_scsi_block_select, NULL);
+        if (dir_num < 0)
                 return -1;
 
-        for (i = 0; i < num; i++)
-                free(namelist[i]);
-        free(namelist);
-        return num;
+        for (i = 0; i < dir_num; i++)
+                free(dir_list[i]);
+        free(dir_list);
+        return dir_num;
 }
 
 static int lm_idm_scsi_block_node_select(const struct dirent *s)
@@ -206,7 +181,7 @@ static int lm_idm_scsi_block_node_select(const struct dirent *s)
 			return 0;   /* parent: '..' */
         }
 
-	strncpy(blk_str, s->d_name, PATH_MAX);
+	strncpy(blk_dev, s->d_name, PATH_MAX);
         return 1;
 }
 
@@ -225,7 +200,7 @@ static int lm_idm_scsi_find_block_node(const char *dir_name)
         return num;
 }
 
-static int lm_idm_scsi_search_partition(char *dev)
+static int lm_idm_scsi_search_propeller_partition(char *dev)
 {
 	int i, nparts;
 	blkid_probe pr;
@@ -283,202 +258,253 @@ done:
 	return found;
 }
 
-static int lm_idm_scsi_get_value(const char * dir_name,
-			      const char * base_name,
-			      char * value, int max_value_len)
+static char *lm_idm_scsi_get_block_device_node(const char *scsi_path)
 {
-        int len;
-        FILE * f;
-        char b[PATH_MAX];
+	char *blk_path = NULL;
+	char *dev_node = NULL;
+	int ret;
 
-        snprintf(b, sizeof(b), "%s/%s", dir_name, base_name);
-        if (NULL == (f = fopen(b, "r"))) {
-                return -1;
-        }
-        if (NULL == fgets(value, max_value_len, f)) {
-                /* assume empty */
-                value[0] = '\0';
-                fclose(f);
-                return 0;
-        }
-        len = strlen(value);
-        if ((len > 0) && (value[len - 1] == '\n'))
-                value[len - 1] = '\0';
-        fclose(f);
-        return 0;
+	/*
+	 * Locate the "block" directory, such like:
+	 * /sys/bus/scsi/devices/1:0:0:0/block
+	 */
+	ret = lm_idm_scsi_find_block_dirctory(scsi_path);
+	if (ret < 0)
+		return NULL;
+
+	ret = asprintf(&blk_path, "%s/%s", scsi_path, "block");
+	if (ret < 0) {
+		log_error("Fail to allocate memory for blk node path");
+		goto fail;
+	}
+
+	/*
+	 * Locate the block device name, such like:
+	 * /sys/bus/scsi/devices/1:0:0:0/block/sdb
+	 *
+	 * After return from this function and if it makes success,
+	 * the global variable "blk_dev" points to the block device
+	 * name, in this example it points to string "sdb".
+	 */
+	ret = lm_idm_scsi_find_block_node(blk_path);
+	if (ret < 0) {
+		log_error("Fail to find block node");
+		goto fail;
+	}
+
+	ret = asprintf(&dev_node, "/dev/%s", blk_dev);
+	if (ret < 0) {
+		log_error("Fail to allocate memory for blk node path");
+		goto fail;
+	}
+
+	ret = lm_idm_scsi_search_propeller_partition(dev_node);
+	if (ret < 0)
+		goto fail;
+
+	return dev_node;
+
+fail:
+	if (blk_path)
+		free(blk_path);
+	if (dev_node)
+		free(dev_node);
+	return NULL;
 }
 
-static int lm_idm_generate_global_list(void)
+static int lm_idm_get_gl_lock_pv_list(void)
 {
-	struct dirent **namelist;
-	char devs_path[PATH_MAX];
-	char dev_path[PATH_MAX];
-	char blk_path[PATH_MAX];
-	char dev[PATH_MAX];
-	int i, num;
-	int ret;
-	char value[64];
+	struct dirent **dir_list;
+	char scsi_bus_path[PATH_MAX];
+	char *drive_path;
+	int i, dir_num, ret;
 
-	if (glb_op.drive_num)
+	if (glb_lock_op.drive_num)
 		return 0;
 
-	snprintf(devs_path, sizeof(devs_path), "%s%s",
+	snprintf(scsi_bus_path, sizeof(scsi_bus_path), "%s%s",
 		 SYSFS_ROOT, BUS_SCSI_DEVS);
 
-	num = scandir(devs_path, &namelist, lm_idm_scsi_dir_select, NULL);
-	if (num < 0) {  /* scsi mid level may not be loaded */
+	dir_num = scandir(scsi_bus_path, &dir_list,
+			  lm_idm_scsi_directory_select, NULL);
+	if (dir_num < 0) {  /* scsi mid level may not be loaded */
 		log_error("Attached devices: none");
 		return -1;
 	}
 
-	for (i = 0; i < num; ++i) {
-		snprintf(dev_path, sizeof(dev_path), "%s/%s",
-			 devs_path, namelist[i]->d_name);
+	for (i = 0; i < dir_num; i++) {
+		char *scsi_path;
 
-		ret = lm_idm_scsi_get_value(dev_path, "rev",
-					 value, sizeof(value));
-		if (ret < 0)
+		ret = asprintf(&scsi_path, "%s/%s", scsi_bus_path,
+			       dir_list[i]->d_name);
+		if (ret < 0) {
+			log_error("Fail to allocate memory for scsi directory");
+			goto failed;
+		}
+
+		if (glb_lock_op.drive_num >= ILM_DRIVE_MAX_NUM) {
+			log_error("Fail to create the drive list for global lock: drive list exceeds 32?!");
+			log_error("IDM lock manager supports max to 32 drives for drive list");
+			free(scsi_path);
+			goto failed;
+		}
+
+		drive_path = lm_idm_scsi_get_block_device_node(scsi_path);
+		if (!drive_path) {
+			free(scsi_path);
 			continue;
+		}
 
-		if (strcmp("1759", value))
-			continue;
+		glb_lock_op.drives[glb_lock_op.drive_num] = drive_path;
+		glb_lock_op.drive_num++;
 
-		ret = lm_idm_scsi_find_block_path(dev_path);
-		if (ret < 0)
-			continue;
-
-		snprintf(blk_path, sizeof(blk_path), "%s/%s",
-			 dev_path, "block");
-
-		ret = lm_idm_scsi_find_block_node(blk_path);
-		if (ret < 0)
-			continue;
-
-		snprintf(dev, sizeof(dev), "/dev/%s", blk_str);
-
-		ret = lm_idm_scsi_search_partition(dev);
-		if (ret < 0)
-			continue;
-
-		snprintf(dev, sizeof(dev), "/dev/%s%d", blk_str, ret);
-
-		glb_op.drives[glb_op.drive_num] = strdup(dev);
-		glb_op.drive_num++;
+		free(scsi_path);
 	}
 
-	for (i = 0; i < num; i++)
-		free(namelist[i]);
-	free(namelist);
+	for (i = 0; i < dir_num; i++)
+		free(dir_list[i]);
+	free(dir_list);
 	return 0;
-}
 
-int lm_data_size_idm(void)
-{
-	return sizeof(struct rd_idm);
+failed:
+	for (i = 0; i < dir_num; i++)
+		free(dir_list[i]);
+	free(dir_list);
+
+	for (i = 0; i < glb_lock_op.drive_num; i++) {
+		if (glb_lock_op.drives[i]) {
+			free(glb_lock_op.drives[i]);
+			glb_lock_op.drives[i] = NULL;
+		}
+	}
+
+	return -1;
 }
 
 int lm_prepare_lockspace_idm(struct lockspace *ls)
 {
 	struct lm_idm *lm = NULL;
-	char killpath[IDM_FAILURE_PATH_LEN];
-	char killargs[IDM_FAILURE_ARGS_LEN];
-	int ret, rv;
-
-	/*
-	 * Construct the path to lvmlockctl by using the path to the lvm binary
-	 * and appending "lockctl" to get /path/to/lvmlockctl.
-	 */
-	memset(killpath, 0, sizeof(killpath));
-	snprintf(killpath, IDM_FAILURE_PATH_LEN, "%slockctl", LVM_PATH);
-
-	memset(killargs, 0, sizeof(killargs));
-	snprintf(killargs, IDM_FAILURE_ARGS_LEN, "--kill %s", ls->vg_name);
 
 	lm = malloc(sizeof(struct lm_idm));
 	if (!lm) {
-		ret = -ENOMEM;
-		goto fail;
+		log_error("S %s prepare_lockspace_idm fail to allocate lm_idm for %s",
+			  ls->name, ls->vg_name);
+		return -ENOMEM;
 	}
-
 	memset(lm, 0x0, sizeof(struct lm_idm));
 
-	rv = ilm_connect(&lm->sock);
-	if (rv < 0) {
-		log_error("prepare_lockspace_idm %s register error %d",
-			  ls->name, lm->sock);
-		lm->sock = 0;
-		ret = -EMANAGER;
-		goto fail;
-	}
-
-	log_debug("set killpath to %s %s", killpath, killargs);
-
-	rv = ilm_set_killpath(lm->sock, killpath, killargs);
-	if (rv < 0) {
-		log_error("prepare_lockspace_idm %s killpath error %d",
-			  ls->name, rv);
-		ret = -EMANAGER;
-		goto fail;
-	}
-
 	ls->lm_data = lm;
-	log_debug("prepare_lockspace_idm %s done", ls->name);
+	log_debug("S %s prepare_lockspace_idm done", ls->name);
 	return 0;
-
-fail:
-	if (lm && lm->sock)
-		close(lm->sock);
-	if (lm)
-		free(lm);
-	return ret;
 }
 
 int lm_add_lockspace_idm(struct lockspace *ls, int adopt)
 {
-	if (daemon_test) {
-		sleep(2);
-		return 0;
-	}
-
-	log_debug("add_lockspace_idm %s done", ls->name);
-	return 0;
-}
-
-int lm_rem_lockspace_idm(struct lockspace *ls, int free_vg)
-{
+	char killpath[IDM_FAILURE_PATH_LEN];
+	char killargs[IDM_FAILURE_ARGS_LEN];
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	int rv;
 
 	if (daemon_test)
 		return 0;
 
-	rv = ilm_disconnect(lmi->sock);
-	if (rv < 0) {
-		log_error("rem_lockspace_idm %s error %d", ls->name, rv);
-		return rv;
+	if (!strcmp(ls->name, S_NAME_GL_IDM)) {
+		/*
+		 * Prepare the pv list for global lock, if the drive contains
+		 * "propeller" partition, then this drive will be considered
+		 * as a member of pv list.
+		 */
+		rv = lm_idm_get_gl_lock_pv_list();
+		if (rv < 0) {
+			log_error("S %s add_lockspace_idm fail to get pv list for glb lock",
+				  ls->name);
+			return -EIO;
+		} else {
+			log_error("S %s add_lockspace_idm get pv list for glb lock",
+				  ls->name);
+		}
 	}
 
+	/*
+	 * Construct the execution path for command "lvmlockctl" by using the
+	 * path to the lvm binary and appending "lockctl".
+	 */
+	memset(killpath, 0, sizeof(killpath));
+	snprintf(killpath, IDM_FAILURE_PATH_LEN, "%slockctl", LVM_PATH);
+
+	/* Pass the argument "--kill vg_name" for killpath */
+	memset(killargs, 0, sizeof(killargs));
+	snprintf(killargs, IDM_FAILURE_ARGS_LEN, "--kill %s", ls->vg_name);
+
+	/* Connect with IDM lock manager per every lockspace. */
+	rv = ilm_connect(&lmi->sock);
+	if (rv < 0) {
+		log_error("S %s add_lockspace_idm fail to connect the lock manager %d",
+			  ls->name, lmi->sock);
+		lmi->sock = 0;
+		rv = -EMANAGER;
+		goto fail;
+	}
+
+	rv = ilm_set_killpath(lmi->sock, killpath, killargs);
+	if (rv < 0) {
+		log_error("S %s add_lockspace_idm fail to set kill path %d",
+			  ls->name, rv);
+		rv = -EMANAGER;
+		goto fail;
+	}
+
+	log_debug("S %s add_lockspace_idm kill path is: \"%s %s\"",
+		  ls->name, killpath, killargs);
+
+	log_debug("S %s add_lockspace_idm done", ls->name);
+	return 0;
+
+fail:
+	if (lmi && lmi->sock)
+		close(lmi->sock);
+	if (lmi)
+		free(lmi);
+	return rv;
+}
+
+int lm_rem_lockspace_idm(struct lockspace *ls, int free_vg)
+{
+	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
+	int i, rv = 0;
+
+	if (daemon_test)
+		goto out;
+
+	rv = ilm_disconnect(lmi->sock);
+	if (rv < 0)
+		log_error("S %s rem_lockspace_idm error %d", ls->name, rv);
+
+	/* Release pv list for global lock */
+	if (!strcmp(ls->name, "lvm_global")) {
+		for (i = 0; i < glb_lock_op.drive_num; i++) {
+			if (glb_lock_op.drives[i]) {
+				free(glb_lock_op.drives[i]);
+				glb_lock_op.drives[i] = NULL;
+			}
+		}
+	}
+
+out:
 	free(lmi);
 	ls->lm_data = NULL;
-	return 0;
+	return rv;
 }
 
 static int lm_add_resource_idm(struct lockspace *ls, struct resource *r)
 {
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	char *buf;
 
 	if (r->type == LD_RT_GL || r->type == LD_RT_VG) {
-		buf = malloc(sizeof(struct val_blk));
-		if (!buf)
+		rdi->vb = zalloc(sizeof(struct val_blk));
+		if (!rdi->vb)
 			return -ENOMEM;
-
-		memset(buf, 0x0, sizeof(struct val_blk));
-		rdi->vb = (struct val_blk *)buf;
 	}
-
-	if (daemon_test)
-		return 0;
 
 	return 0;
 }
@@ -486,9 +512,6 @@ static int lm_add_resource_idm(struct lockspace *ls, struct resource *r)
 int lm_rem_resource_idm(struct lockspace *ls, struct resource *r)
 {
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-
-	if (daemon_test)
-		return 0;
 
 	if (rdi->vb)
 		free(rdi->vb);
@@ -498,12 +521,27 @@ int lm_rem_resource_idm(struct lockspace *ls, struct resource *r)
 	return 0;
 }
 
+static int to_idm_mode(int ld_mode)
+{
+	switch (ld_mode) {
+	case LD_LK_EX:
+		return IDM_MODE_EXCLUSIVE;
+	case LD_LK_SH:
+		return IDM_MODE_SHAREABLE;
+	default:
+		break;
+	};
+
+	return -1;
+}
+
 int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
-		struct val_blk *vb_out, char *lv_uuid,
-		char *pvs_path[MAX_PVS_PATH_NUM], int adopt)
+		struct val_blk *vb_out, char *lv_uuid, struct pvs *pvs,
+		int adopt)
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
+	char **drive_path = NULL;
 	uint64_t timestamp;
 	int reset_vb = 0;
 	int rv, i;
@@ -515,7 +553,7 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 		r->lm_init = 1;
 	}
 
-	rv = _to_idm_mode(ld_mode, &rdi->op.mode);
+	rdi->op.mode = to_idm_mode(ld_mode);
 	if (rv < 0) {
 		log_error("lock_idm invalid mode %d", ld_mode);
 		return -EINVAL;
@@ -532,66 +570,72 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 		return 0;
 	}
 
-	rdi->op.timeout = 60000;
-	rdi->op.drive_num = 0;
+	rdi->op.timeout = IDM_TIMEOUT;
 
-	if (r->type == LD_RT_GL) {
-		rv = lm_idm_generate_global_list();
-		if (rv < 0) {
-			log_error("lock_idm fail to generate glb list");
-			return -EIO;
-		}
+	/*
+	 * Generate the UUID string, for RT_VG, it only needs to generate
+	 * UUID string for VG level, for RT_LV, it needs to generate
+	 * UUID strings for both VG and LV levels.  At the end, these IDs
+	 * are used as identifier for IDM in drive firmware.
+	 */
+	if (r->type == LD_RT_VG || r->type == LD_RT_LV)
+		log_debug("S %s R %s VG uuid %s", ls->name, r->name, ls->vg_uuid);
+	if (r->type == LD_RT_LV)
+		log_debug("S %s R %s LV uuid %s", ls->name, r->name, lv_uuid);
 
-		for (i = 0; i < glb_op.drive_num; i++) {
-			/* Don't exceed to MAX_PVS_PATH_NUM */
-			if (i >= MAX_PVS_PATH_NUM)
-				break;
-
-			rdi->op.drives[i] = glb_op.drives[i];
-			rdi->op.drive_num++;
-		}
-	} else if (r->type == LD_RT_VG) {
-		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-			if (!ls->pvs_path[i])
-				continue;
-
-			rdi->op.drives[i] = ls->pvs_path[i];
-			rdi->op.drive_num++;
-		}
+	memset(&rdi->id, 0x0, sizeof(struct idm_lock_id));
+	if (r->type == LD_RT_VG) {
+		uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
 	} else if (r->type == LD_RT_LV) {
-		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-			if (!pvs_path[i])
-				continue;
-
-			rdi->op.drives[i] = pvs_path[i];
-			rdi->op.drive_num++;
-		}
+		uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
+		uuid_read_format(rdi->id.lv_uuid, lv_uuid);
 	}
+
+	/*
+	 * Establish the drive path list for lock, since different lock type
+	 * has different drive list; the GL lock uses the global pv list,
+	 * the VG lock uses the pv list spanned for the whole volume group,
+	 * the LV lock uses the pv list for the logical volume.
+	 */
+	switch (r->type) {
+	case LD_RT_GL:
+		drive_path = glb_lock_op.drives;
+		rdi->op.drive_num = glb_lock_op.drive_num;
+		break;
+	case LD_RT_VG:
+		drive_path = ls->pvs.path;
+		rdi->op.drive_num = ls->pvs.num;
+		break;
+	case LD_RT_LV:
+		drive_path = pvs->path;
+		rdi->op.drive_num = pvs->num;
+		break;
+	default:
+		break;
+	}
+
+	if (!drive_path) {
+		log_error("S %s R %s cannot find the valid drive path array",
+			  ls->name, r->name);
+		return -EINVAL;
+	}
+
+	if (rdi->op.drive_num >= MAX_PVS_PATH) {
+		log_error("S %s R %s exceeds limitation for drive path array",
+			  ls->name, r->name);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < rdi->op.drive_num; i++)
+		rdi->op.drives[i] = drive_path[i];
 
 	log_debug("S %s R %s mode %d drive_num %d timeout %d",
 		  ls->name, r->name, rdi->op.mode,
 		  rdi->op.drive_num, rdi->op.timeout);
 
 	for (i = 0; i < rdi->op.drive_num; i++)
-		log_debug("S %s R %s path %s", ls->name, r->name,
-			  rdi->op.drives[i]);
-
-	memset(&rdi->id, 0x0, sizeof(struct idm_lock_id));
-	if (r->type == LD_RT_VG) {
-		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
-
-		log_debug("S %s R %s VG uuid %s",
-			  ls->name, r->name, ls->vg_uuid);
-
-	} else if (r->type == LD_RT_LV) {
-		_uuid_read_format(rdi->id.vg_uuid, ls->vg_uuid);
-		_uuid_read_format(rdi->id.lv_uuid, lv_uuid);
-
-		log_debug("S %s R %s VG uuid %s",
-			  ls->name, r->name, ls->vg_uuid);
-		log_debug("S %s R %s LV uuid %s",
-			  ls->name, r->name, lv_uuid);
-	}
+		log_debug("S %s R %s drive path[%d] %s",
+			  ls->name, r->name, i, rdi->op.drives[i]);
 
 	rv = ilm_lock(lmi->sock, &rdi->id, &rdi->op);
 	if (rv < 0) {
@@ -601,16 +645,12 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 	}
 
 	if (rdi->vb) {
-		rv = ilm_read_lvb(lmi->sock, &rdi->id,
-				  (char *)&timestamp, sizeof(uint64_t));
-
-		log_error("S %s R %s lock_idm get_lvb ts %lu %lu",
-			  ls->name, r->name,
-			  rdi->vb_timestamp, timestamp);
+		rv = ilm_read_lvb(lmi->sock, &rdi->id, (char *)&timestamp,
+				  sizeof(uint64_t));
 
 		/*
-		 * Fail to read VB, it might be caused by drive failure,
-		 * force to reset and notify up layer.
+		 * If fail to read value block, which might be caused by drive
+		 * failure, notify up layer to invalidate metadata.
 		 */
 		if (rv < 0) {
 			log_error("S %s R %s lock_idm get_lvb error %d",
@@ -619,20 +659,17 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 
 			/* Reset timestamp */
 			rdi->vb_timestamp = 0;
+
 		/*
-		 * If timestamp is -1, means an IDM is broken is IDM lock
-		 * manager, for this case, let's use safe way to notify up
-		 * layer to invalidate metadata.
-		 *
-		 * Or the timestamp mismatching which is caused by other
-		 * hosts had updated LVB, for this case, let's reset VB
-		 * as well.
+		 * If the cached timestamp mismatches with the stored value
+		 * in the IDM, this means another host has updated timestamp
+		 * for the new VB.  Let's reset VB and notify up layer to
+		 * invalidate metadata.
 		 */
 		} else if (rdi->vb_timestamp != timestamp) {
-
-			log_error("S %s R %s lock_idm get_lvb mismatch %lu %lu",
-				  ls->name, r->name,
-				  rdi->vb_timestamp, timestamp);
+			log_debug("S %s R %s lock_idm get lvb timestamp %lu:%lu",
+				  ls->name, r->name, rdi->vb_timestamp,
+				  timestamp);
 
 			rdi->vb_timestamp = timestamp;
 			reset_vb = 1;
@@ -642,16 +679,15 @@ int lm_lock_idm(struct lockspace *ls, struct resource *r, int ld_mode,
 			memset(rdi->vb, 0, sizeof(struct val_blk));
 			memset(vb_out, 0, sizeof(struct val_blk));
 
-
 			/*
-			 * The lock is still acquired, the vb values
-			 * considered invalid.
+			 * The lock is still acquired, but the vb values has
+			 * been invalidated.
 			 */
 			rv = 0;
 			goto out;
 		}
 
-		/* Otherwise, let's copy the cached VB to up layer */
+		/* Otherwise, copy the cached VB to up layer */
 		memcpy(vb_out, rdi->vb, sizeof(struct val_blk));
 	}
 
@@ -664,46 +700,51 @@ int lm_convert_idm(struct lockspace *ls, struct resource *r,
 {
 	struct lm_idm *lmi = (struct lm_idm *)ls->lm_data;
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
-	uint32_t mode;
-	int rv;
-
-	if (daemon_test)
-		return 0;
+	int mode, rv;
 
 	if (rdi->vb && r_version && (r->mode == LD_LK_EX)) {
 		if (!rdi->vb->version) {
 			/* first time vb has been written */
 			rdi->vb->version = VAL_BLK_VERSION;
 		}
-
-		if (r_version)
-			rdi->vb->r_version = r_version;
+		rdi->vb->r_version = r_version;
 
 		log_debug("S %s R %s convert_idm set r_version %u",
 			  ls->name, r->name, r_version);
 
-		rdi->vb_timestamp = _read_utc_time();
+		rdi->vb_timestamp = read_utc_time();
 
-		rv = ilm_write_lvb(lmi->sock, &rdi->id,
-				   (char *)rdi->vb_timestamp, sizeof(uint64_t));
-		if (rv < 0) {
-			log_error("S %s R %s convert_idm set_lvb error %d",
-				  ls->name, r->name, rv);
-			return -ELMERR;
-		}
+		log_debug("S %s R %s convert_idm vb %x %x %u timestamp %lu",
+			  ls->name, r->name, rdi->vb->version, rdi->vb->flags,
+			  rdi->vb->r_version, rdi->vb_timestamp);
 	}
 
-	rv = _to_idm_mode(ld_mode, &mode);
-	if (rv < 0) {
-		log_error("convert_idm invalid mode %d", ld_mode);
+	mode = to_idm_mode(ld_mode);
+	if (mode < 0) {
+		log_error("S %s R %s convert_idm invalid mode %d",
+			  ls->name, r->name, ld_mode);
 		return -EINVAL;
 	}
 
 	log_debug("S %s R %s convert_idm", ls->name, r->name);
 
+	if (daemon_test)
+		return 0;
+
+	if (rdi->vb && r_version && (r->mode == LD_LK_EX)) {
+		rv = ilm_write_lvb(lmi->sock, &rdi->id,
+				   (char *)rdi->vb_timestamp, sizeof(uint64_t));
+		if (rv < 0) {
+			log_error("S %s R %s convert_idm write lvb error %d",
+				  ls->name, r->name, rv);
+			return -ELMERR;
+		}
+	}
+
 	rv = ilm_convert(lmi->sock, &rdi->id, mode);
 	if (rv < 0)
-		log_error("S %s R %s convert_idm error %d", ls->name, r->name, rv);
+		log_error("S %s R %s convert_idm convert error %d",
+			  ls->name, r->name, rv);
 
 	return rv;
 }
@@ -715,19 +756,6 @@ int lm_unlock_idm(struct lockspace *ls, struct resource *r,
 	struct rd_idm *rdi = (struct rd_idm *)r->lm_data;
 	int rv;
 
-	log_debug("S %s R %s unlock_idm %s r_version %u flags %x",
-		  ls->name, r->name, mode_str(r->mode), r_version, lmu_flags);
-
-	if (daemon_test) {
-		if (rdi->vb && r_version && (r->mode == LD_LK_EX)) {
-			if (!rdi->vb->version)
-				rdi->vb->version = cpu_to_le16(VAL_BLK_VERSION);
-			if (r_version)
-				rdi->vb->r_version = cpu_to_le32(r_version);
-		}
-		return 0;
-	}
-
 	if (rdi->vb && r_version && (r->mode == LD_LK_EX)) {
 		if (!rdi->vb->version) {
 			/* first time vb has been written */
@@ -735,15 +763,19 @@ int lm_unlock_idm(struct lockspace *ls, struct resource *r,
 		}
 		if (r_version)
 			rdi->vb->r_version = r_version;
+		rdi->vb_timestamp = read_utc_time();
 
-		log_debug("S %s R %s unlock_idm set r_version %u",
-			  ls->name, r->name, r_version);
+		log_debug("S %s R %s unlock_idm vb %x %x %u timestamp %lu",
+			  ls->name, r->name, rdi->vb->version, rdi->vb->flags,
+			  rdi->vb->r_version, rdi->vb_timestamp);
+	}
 
-		rdi->vb_timestamp = _read_utc_time();
+	log_debug("S %s R %s unlock_idm", ls->name, r->name);
 
-		log_debug("S %s R %s unlock_idm set timestamp %lu",
-			  ls->name, r->name, rdi->vb_timestamp);
+	if (daemon_test)
+		return 0;
 
+	if (rdi->vb && r_version && (r->mode == LD_LK_EX)) {
 		rv = ilm_write_lvb(lmi->sock, &rdi->id,
 				   (char *)&rdi->vb_timestamp, sizeof(uint64_t));
 		if (rv < 0) {
@@ -752,9 +784,6 @@ int lm_unlock_idm(struct lockspace *ls, struct resource *r,
 			return -ELMERR;
 		}
 	}
-
-	if (daemon_test)
-		return 0;
 
 	rv = ilm_unlock(lmi->sock, &rdi->id);
 	if (rv < 0)
@@ -780,7 +809,7 @@ int lm_hosts_idm(struct lockspace *ls, int notify)
 		rv = ilm_get_host_count(lmi->sock, &rdi->id, &rdi->op,
 					&count, &self);
 		if (rv < 0) {
-			log_error("lm_hosts_idm error %d", rv);
+			log_error("S %s lm_hosts_idm error %d", ls->name, rv);
 			return rv;
 		}
 
@@ -794,10 +823,8 @@ int lm_hosts_idm(struct lockspace *ls, int notify)
 
 int lm_get_lockspaces_idm(struct list_head *ls_rejoin)
 {
-	/*
-	 * TODO: Need to add support for adoption.
-	 */
-	return 0;
+	/* TODO: Need to add support for adoption. */
+	return -1;
 }
 
 int lm_is_running_idm(void)
@@ -809,7 +836,7 @@ int lm_is_running_idm(void)
 
 	rv = ilm_connect(&sock);
 	if (rv < 0) {
-		log_error("Fail to connect IDM lock manager: rv=%d", rv);
+		log_error("Fail to connect seagate IDM lock manager %d", rv);
 		return 0;
 	}
 
