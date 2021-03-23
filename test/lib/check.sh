@@ -447,6 +447,11 @@ grep_dmsetup() {
 	grep -q "${@:3}" out || die "Expected output \"" "${@:3}" "\" from dmsetup $1 not found!"
 }
 
+grep_lvmlockd_dump() {
+	lvmlockctl --dump | tee out
+	grep -q "${@:1}" out || die "Expected output \"" "${@:1}" "\" from lvmlockctl --dump not found!"
+}
+
 #set -x
 unset LVM_VALGRIND
 "$@"
