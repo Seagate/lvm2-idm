@@ -423,6 +423,39 @@ struct lockspace *alloc_lockspace(void)
 	return ls;
 }
 
+static int copy_pvs_path(struct pvs *dst, struct pvs *src)
+{
+	int i, copied = 0;
+
+	for (i = 0; i < src->num; i++) {
+		if (!src->path[i] || !strcmp(src->path[i], "none"))
+			continue;
+
+		dst->path[copied] = strdup(src->path[i]);
+		if (!dst->path[copied]) {
+			log_error("out of memory for copying pvs path");
+			goto failed;
+		}
+		copied++;
+	}
+	dst->num = copied;
+	return 0;
+
+failed:
+	for (i = 0; i < copied; i++)
+		free((char *)dst->path[i]);
+	return -1;
+}
+
+static const char **alloc_pvs_path(struct pvs *pvs, int num)
+{
+	pvs->path = malloc(sizeof(char *) * num);
+	if (pvs->path)
+		memset(pvs->path, 0x0, sizeof(char *) * num);
+
+	return pvs->path;
+}
+
 static struct action *alloc_action(void)
 {
 	struct action *act;
@@ -506,17 +539,27 @@ static struct lock *alloc_lock(void)
 	return lk;
 }
 
-static void free_action(struct action *act)
+static void free_pvs_path(struct pvs *pvs)
 {
 	int i;
 
-	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-		if (!act->pvs_path[i])
+	if (!pvs->num && !pvs->path)
+		return;
+
+	for (i = 0; i < pvs->num; i++) {
+		if (!pvs->path[i])
 			continue;
 
-		free(act->pvs_path[i]);
-		act->pvs_path[i] = NULL;
+		free((char *)pvs->path[i]);
+		pvs->path[i] = NULL;
 	}
+
+	free(pvs->path);
+}
+
+static void free_action(struct action *act)
+{
+	free_pvs_path(&act->pvs);
 
 	pthread_mutex_lock(&unused_struct_mutex);
 	if (unused_action_count >= MAX_UNUSED_ACTION) {
@@ -564,18 +607,6 @@ static void free_lock(struct lock *lk)
 	pthread_mutex_unlock(&unused_struct_mutex);
 }
 
-static void free_ls_pvs_path(struct lockspace *ls)
-{
-	int i;
-
-	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-		if (ls->pvs_path[i]) {
-			free(ls->pvs_path[i]);
-			ls->pvs_path[i] = NULL;
-		}
-	}
-}
-
 static int setup_structs(void)
 {
 	struct action *act;
@@ -585,12 +616,11 @@ static int setup_structs(void)
 	int data_san = lm_data_size_sanlock();
 	int data_dlm = lm_data_size_dlm();
 	int data_idm = lm_data_size_idm();
-	int data_size;
 	int i;
 
-	data_size = data_san > data_dlm ? data_san : data_dlm;
-	data_size = data_size > data_idm ? data_size : data_idm;
-	resource_lm_data_size = data_size;
+	resource_lm_data_size = data_san > data_dlm ? data_san : data_dlm;
+	resource_lm_data_size = resource_lm_data_size > data_idm ?
+					resource_lm_data_size : data_idm;
 
 	pthread_mutex_init(&unused_struct_mutex, NULL);
 	INIT_LIST_HEAD(&unused_action);
@@ -907,7 +937,7 @@ static int lm_lock(struct lockspace *ls, struct resource *r, int mode, struct ac
 		rv = lm_lock_sanlock(ls, r, mode, vb_out, retry, adopt);
 	else if (ls->lm_type == LD_LM_IDM)
 		rv = lm_lock_idm(ls, r, mode, vb_out, act->lv_uuid,
-				 act->pvs_path, adopt);
+				 &act->pvs, adopt);
 	else
 		return -1;
 
@@ -2715,6 +2745,8 @@ out_act:
 	ls->drop_vg = drop_vg;
 	if (ls->lm_type == LD_LM_DLM && !strcmp(ls->name, gl_lsname_dlm))
 		global_dlm_lockspace_exists = 0;
+	if (ls->lm_type == LD_LM_IDM && !strcmp(ls->name, gl_lsname_idm))
+		global_idm_lockspace_exists = 0;
 
 	/*
 	 * Avoid a name collision of the same lockspace is added again before
@@ -2823,7 +2855,7 @@ static int add_lockspace_thread(const char *ls_name,
 {
 	struct lockspace *ls, *ls2;
 	struct resource *r;
-	int rv, i;
+	int rv;
 
 	log_debug("add_lockspace_thread %s %s version %u",
 		  lm_str(lm_type), ls_name, act ? act->version : 0);
@@ -2834,8 +2866,19 @@ static int add_lockspace_thread(const char *ls_name,
 	strncpy(ls->name, ls_name, MAX_NAME);
 	ls->lm_type = lm_type;
 
-	if (act)
+	if (act) {
 		ls->start_client_id = act->client_id;
+
+		/*
+		 * Copy PV list to lockspact structure, so this is
+		 * used for VG locking for idm scheme.
+		 */
+		if (!alloc_pvs_path(&ls->pvs, act->pvs.num)) {
+			free(ls);
+			return -ENOMEM;
+		}
+		copy_pvs_path(&ls->pvs, &act->pvs);
+	}
 
 	if (vg_uuid)
 		strncpy(ls->vg_uuid, vg_uuid, 64);
@@ -2846,17 +2889,8 @@ static int add_lockspace_thread(const char *ls_name,
 	if (vg_args)
 		strncpy(ls->vg_args, vg_args, MAX_ARGS);
 
-	if (act) {
+	if (act)
 		ls->host_id = act->host_id;
-
-		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-			if (!act->pvs_path[i])
-				continue;
-
-			ls->pvs_path[i] = strdup(act->pvs_path[i]);
-			log_debug("ls path[%d]=%s", i, ls->pvs_path[i]);
-		}
-	}
 
 	if (!(r = alloc_resource())) {
 		free(ls);
@@ -2872,15 +2906,17 @@ static int add_lockspace_thread(const char *ls_name,
 	pthread_mutex_lock(&lockspaces_mutex);
 	ls2 = find_lockspace_name(ls->name);
 	if (ls2) {
-
-		free_ls_pvs_path(ls2);
-		for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-			if (!ls->pvs_path[i])
-				continue;
-
-			ls2->pvs_path[i] = strdup(ls->pvs_path[i]);
-			log_debug("update lockspace %s path[%d]=%s",
-				   ls->name, i, ls->pvs_path[i]);
+		/*
+		 * If find an existed lockspace, we need to update the PV list
+		 * based on the latest information, and release for the old
+		 * PV list in case it keeps stale information.
+		 */
+		free_pvs_path(&ls2->pvs);
+		if (!alloc_pvs_path(&ls2->pvs, ls->pvs.num)) {
+			log_debug("add_lockspace_thread %s fails to allocate pvs", ls->name);
+			rv = -ENOMEM;
+		} else {
+			copy_pvs_path(&ls2->pvs, &ls->pvs);
 		}
 
 		if (ls2->thread_stop) {
@@ -2895,7 +2931,7 @@ static int add_lockspace_thread(const char *ls_name,
 		}
 		pthread_mutex_unlock(&lockspaces_mutex);
 		free_resource(r);
-		free_ls_pvs_path(ls);
+		free_pvs_path(&ls->pvs);
 		free(ls);
 		return rv;
 	}
@@ -2921,7 +2957,7 @@ static int add_lockspace_thread(const char *ls_name,
 		list_del(&ls->list);
 		pthread_mutex_unlock(&lockspaces_mutex);
 		free_resource(r);
-		free_ls_pvs_path(ls);
+		free_pvs_path(&ls->pvs);
 		free(ls);
 		return rv;
 	}
@@ -2930,16 +2966,19 @@ static int add_lockspace_thread(const char *ls_name,
 }
 
 /*
- * There is no add_sanlock_global_lockspace or
- * rem_sanlock_global_lockspace because with sanlock,
- * the global lockspace is one of the vg lockspaces.
+ * There is no function variant add_sanlock_global_lockspace() or
+ * rem_sanlock_global_lockspace() because with sanlock, the global
+ * lockspace is one of the vg lockspaces.
+ *
+ * The functions add_global_lockspace() and rem_global_lockspace()
+ * is used for DLM and IDM locking scheme.
  */
-
-static int add_dlm_global_lockspace(struct action *act)
+static int add_global_lockspace(char *ls_name, int lm_type,
+				struct action *act)
 {
 	int rv;
 
-	if (global_dlm_lockspace_exists)
+	if (global_dlm_lockspace_exists || global_idm_lockspace_exists)
 		return 0;
 
 	/*
@@ -2947,9 +2986,9 @@ static int add_dlm_global_lockspace(struct action *act)
 	 * lock request, insert an internal gl sh lock request?
 	 */
 
-	rv = add_lockspace_thread(gl_lsname_dlm, NULL, NULL, LD_LM_DLM, NULL, act);
+	rv = add_lockspace_thread(ls_name, NULL, NULL, lm_type, NULL, act);
 	if (rv < 0)
-		log_debug("add_dlm_global_lockspace add_lockspace_thread %d", rv);
+		log_debug("add_global_lockspace add_lockspace_thread %d", rv);
 
 	/*
 	 * EAGAIN may be returned for a short period because
@@ -2962,12 +3001,12 @@ static int add_dlm_global_lockspace(struct action *act)
 }
 
 /*
- * If dlm gl lockspace is the only one left, then stop it.
- * This is not used for an explicit rem_lockspace action from
- * the client, only for auto remove.
+ * When DLM or IDM locking scheme is used for global lock, if the global
+ * lockspace is the only one left, then stop it.  This is not used for
+ * an explicit rem_lockspace action from the client, only for auto
+ * remove.
  */
-
-static int rem_dlm_global_lockspace(void)
+static int rem_global_lockspace(char *ls_name)
 {
 	struct lockspace *ls, *ls_gl = NULL;
 	int others = 0;
@@ -2975,7 +3014,7 @@ static int rem_dlm_global_lockspace(void)
 
 	pthread_mutex_lock(&lockspaces_mutex);
 	list_for_each_entry(ls, &lockspaces, list) {
-		if (!strcmp(ls->name, gl_lsname_dlm)) {
+		if (!strcmp(ls->name, ls_name)) {
 			ls_gl = ls;
 			continue;
 		}
@@ -3007,24 +3046,24 @@ out:
 	return rv;
 }
 
+static int add_dlm_global_lockspace(struct action *act)
+{
+	return add_global_lockspace(gl_lsname_dlm, LD_LM_DLM, act);
+}
+
+static int rem_dlm_global_lockspace(void)
+{
+	return rem_global_lockspace(gl_lsname_dlm);
+}
+
 static int add_idm_global_lockspace(struct action *act)
 {
-	int rv;
-
-	if (global_idm_lockspace_exists)
-		return 0;
-
-	rv = add_lockspace_thread(gl_lsname_idm, NULL, NULL, LD_LM_IDM,
-				  NULL, act);
-	if (rv < 0)
-		log_debug("%s: add_lockspace_thread %d", __func__, rv);
-
-	return rv;
+	return add_global_lockspace(gl_lsname_idm, LD_LM_IDM, act);
 }
 
 static int rem_idm_global_lockspace(void)
 {
-	return rem_dlm_global_lockspace();
+	return rem_global_lockspace(gl_lsname_idm);
 }
 
 /*
@@ -3132,16 +3171,14 @@ static int rem_lockspace(struct action *act)
 	pthread_mutex_unlock(&lockspaces_mutex);
 
 	/*
-	 * The dlm global lockspace was automatically added when
-	 * the first dlm vg lockspace was added, now reverse that
-	 * by automatically removing the dlm global lockspace when
-	 * the last dlm vg lockspace is removed.
+	 * For DLM and IDM locking scheme, the global lockspace was
+	 * automatically added when the first vg lockspace was added,
+	 * now reverse that by automatically removing the dlm global
+	 * lockspace when the last vg lockspace is removed.
 	 */
-
 	if (rt == LD_RT_VG && gl_use_dlm)
 		rem_dlm_global_lockspace();
-
-	if (rt == LD_RT_VG && gl_use_idm)
+	else if (rt == LD_RT_VG && gl_use_idm)
 		rem_idm_global_lockspace();
 
 	return 0;
@@ -3266,7 +3303,7 @@ static int for_each_lockspace(int do_stop, int do_free, int do_force)
 				if (ls->free_vg) {
 					/* In future we may need to free ls->actions here */
 					free_ls_resources(ls);
-					free_ls_pvs_path(ls);
+					free_pvs_path(&ls->pvs);
 					free(ls);
 					free_count++;
 				}
@@ -3357,7 +3394,7 @@ static int work_init_vg(struct action *act)
 	else if (act->lm_type == LD_LM_DLM)
 		rv = lm_init_vg_dlm(ls_name, act->vg_name, act->flags, act->vg_args);
 	else if (act->lm_type == LD_LM_IDM)
-		/* Do nothing for IDM */
+		/* Non't do anything for IDM when initialize VG */
 		rv = 0;
 	else
 		rv = -EINVAL;
@@ -3531,19 +3568,21 @@ static void *worker_thread_main(void *arg_in)
 				run_idm = gl_use_idm;
 			}
 
-			log_error("%s: run_sanlock=%d run_dlm=%d run_idm=%d",
-				  __func__, run_sanlock, run_dlm, run_idm);
-
-			if (run_sanlock && (run_dlm || run_idm))
+			/*
+			 * It's not possible to enable multiple locking schemes
+			 * for global lock, otherwise, it must be conflict and
+			 * reports it!
+			 */
+			if ((run_sanlock + run_dlm + run_idm) >= 2)
 				act->result = -EXFULL;
 			else if (!run_sanlock && !run_dlm && !run_idm)
 				act->result = -ENOLCK;
 			else if (run_sanlock)
 				act->result = LD_LM_SANLOCK;
-			else if (run_idm)
-				act->result = LD_LM_IDM;
 			else if (run_dlm)
 				act->result = LD_LM_DLM;
+			else if (run_idm)
+				act->result = LD_LM_IDM;
 			add_client_result(act);
 
 		} else if ((act->op == LD_OP_LOCK) && (act->flags & LD_AF_SEARCH_LS)) {
@@ -4035,7 +4074,7 @@ static int add_lock_action(struct action *act)
 
 		} else if (act->op == LD_OP_LOCK && act->rt == LD_RT_GL && act->mode != LD_LK_UN && gl_use_idm) {
 			/*
-			 * Automatically start the dlm global lockspace when
+			 * Automatically start the idm global lockspace when
 			 * a command tries to acquire the global lock.
 			 */
 			log_debug("lockspace \"%s\" not found for idm gl, adding...", ls_name);
@@ -4585,8 +4624,8 @@ static void client_recv_action(struct client *cl)
 	const char *vg_uuid;
 	const char *vg_sysid;
 	const char *str;
-	const char *pvs_path[MAX_PVS_PATH_NUM];
-	char buf[10];
+	struct pvs pvs;
+	char buf[12];	/* p v _ p a t h [ x x ] \0 */
 	int64_t val;
 	uint32_t opts = 0;
 	int result = 0;
@@ -4673,11 +4712,21 @@ static void client_recv_action(struct client *cl)
 	str = daemon_request_str(req, "vg_lock_type", NULL);
 	lm = str_to_lm(str);
 
-	memset(pvs_path, 0x0, sizeof(pvs_path));
+	memset(&pvs, 0x0, sizeof(pvs));
 
-	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-		sprintf(buf, "path[%d]", i);
-		pvs_path[i] = daemon_request_str(req, buf, NULL);
+	pvs.num = daemon_request_int(req, "path_num", 0);
+	log_error("pvs_num = %d", pvs.num);
+
+	/* Receive the pv list which is transferred from LVM command */
+	if (!alloc_pvs_path(&pvs, pvs.num)) {
+		log_error("fail to allocate pvs path");
+		rv = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < pvs.num; i++) {
+		snprintf(buf, sizeof(buf), "path[%d]", i);
+		pvs.path[i] = (const char *)daemon_request_str(req, buf, NULL);
 	}
 
 	if (cl_pid && cl_pid != cl->pid)
@@ -4688,12 +4737,12 @@ static void client_recv_action(struct client *cl)
 		strncpy(cl->name, cl_name, MAX_NAME);
 
 	if (!gl_use_dlm && !gl_use_sanlock && !gl_use_idm && (lm > 0)) {
-		if (lm == LD_LM_IDM && lm_support_idm())
-			gl_use_idm = 1;
-		else if (lm == LD_LM_DLM && lm_support_dlm())
+		if (lm == LD_LM_DLM && lm_support_dlm())
 			gl_use_dlm = 1;
 		else if (lm == LD_LM_SANLOCK && lm_support_sanlock())
 			gl_use_sanlock = 1;
+		else if (lm == LD_LM_IDM && lm_support_idm())
+			gl_use_idm = 1;
 
 		log_debug("set gl_use_%s", lm_str(lm));
 	}
@@ -4713,14 +4762,14 @@ static void client_recv_action(struct client *cl)
 	act->flags = opts;
 	act->lm_type = lm;
 
-	for (i = 0; i < MAX_PVS_PATH_NUM; i++) {
-		if (!pvs_path[i] || !strcmp(pvs_path[i], "none"))
-			continue;
-
-		act->pvs_path[i] = strdup(pvs_path[i]);
-
-		log_debug("pvs_path[%d] = %s", i, act->pvs_path[i]);
+	if (!alloc_pvs_path(&act->pvs, pvs.num)) {
+		log_error("fail to allocate pvs path");
+		rv = -ENOMEM;
+		goto out;
 	}
+
+	/* Copy PV list to action, which is used for VG/LV lock */
+	copy_pvs_path(&act->pvs, &pvs);
 
 	if (vg_name && strcmp(vg_name, "none"))
 		strncpy(act->vg_name, vg_name, MAX_NAME);
@@ -4778,7 +4827,7 @@ static void client_recv_action(struct client *cl)
 	}
 
 	if (lm == LD_LM_IDM && !lm_support_idm()) {
-		log_debug("sanlock not supported");
+		log_debug("idm not supported");
 		rv = -EPROTONOSUPPORT;
 		goto out;
 	}
@@ -5533,6 +5582,7 @@ static void adopt_locks(void)
 		}
 		
 		list_del(&ls->list);
+		free_pvs_path(&ls->pvs);
 		free(ls);
 	}
 
@@ -5575,6 +5625,7 @@ static void adopt_locks(void)
 		if (rv < 0) {
 			log_error("Failed to create lockspace thread for VG %s", ls->vg_name);
 			list_del(&ls->list);
+			free_pvs_path(&ls->pvs);
 			free(ls);
 			free_action(act);
 			count_start_fail++;
@@ -6010,7 +6061,7 @@ static int main_loop(daemon_state *ds_arg)
 	}
 
 	strcpy(gl_lsname_dlm, S_NAME_GL_DLM);
-	strcpy(gl_lsname_idm, S_NAME_GL_DLM);
+	strcpy(gl_lsname_idm, S_NAME_GL_IDM);
 
 	INIT_LIST_HEAD(&lockspaces);
 	pthread_mutex_init(&lockspaces_mutex, NULL);

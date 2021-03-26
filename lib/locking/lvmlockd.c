@@ -18,21 +18,17 @@
 #include "lvmcache.h"
 #include "lvmlockd-client.h"
 
-/*
- * Support for maximum 32 PVs for IDM locking scheme
- */
-#define LVMLOCKD_PV_MAX_NUM		32
-
-struct lvmlockd_pvs {
-	char *path[LVMLOCKD_PV_MAX_NUM];
-	int path_num;
-};
 
 static daemon_handle _lvmlockd;
 static const char *_lvmlockd_socket = NULL;
 static int _use_lvmlockd = 0;         /* is 1 if command is configured to use lvmlockd */
 static int _lvmlockd_connected = 0;   /* is 1 if command is connected to lvmlockd */
 static int _lvmlockd_init_failed = 0; /* used to suppress further warnings */
+
+struct lvmlockd_pvs {
+	char **path;
+	int num;
+};
 
 void lvmlockd_set_socket(const char *sock)
 {
@@ -184,17 +180,33 @@ static int _lockd_result(daemon_reply reply, int *result, uint32_t *lockd_flags)
 	return 1;
 }
 
-static daemon_reply _lockd_send(const char *req_name, ...)
+static daemon_reply _lockd_send(const char *req_name,
+				const struct lvmlockd_pvs *lock_pvs, ...)
 {
-	va_list ap;
 	daemon_reply repl;
 	daemon_request req;
+	int i;
+	char key[32];
+	const char *val;
+	va_list ap;
 
 	req = daemon_request_make(req_name);
 
-	va_start(ap, req_name);
+	va_start(ap, lock_pvs);
 	daemon_request_extend_v(req, ap);
 	va_end(ap);
+
+	/* Pass PV list */
+	if (lock_pvs) {
+		daemon_request_extend(req, "path_num = " FMTd64,
+				      (int64_t)(lock_pvs)->num, NULL);
+
+		for (i = 0; i < lock_pvs->num; i++) {
+			snprintf(key, sizeof(key), "path[%d] = %%s", i);
+			val = lock_pvs->path[i] ? lock_pvs->path[i] : "none";
+			daemon_request_extend(req, key, val, NULL);
+		}
+	}
 
 	repl = daemon_send(_lvmlockd, req);
 
@@ -203,56 +215,95 @@ static daemon_reply _lockd_send(const char *req_name, ...)
 	return repl;
 }
 
-static void _retrive_vg_pv_list(struct volume_group *vg,
-				struct lvmlockd_pvs *lock_pvs)
+static void _lockd_retrive_vg_pv_list(struct volume_group *vg,
+				      struct lvmlockd_pvs *lock_pvs)
 {
 	struct pv_list *pvl;
-	struct physical_volume *pv;
-	int i;
+	int allocated = 16, i;
+	char **path;
 
-	i = 0;
-	dm_list_iterate_items(pvl, &vg->pvs) {
-
-		/* Check if out of boundary */
-		if (i >= LVMLOCKD_PV_MAX_NUM)
-			break;
-
-	        pv = pvl->pv;
-		log_debug("%s [VG] find PV device=%s", __func__, pv_dev_name(pv));
-		lock_pvs->path[i] = strdup(pv_dev_name(pv));
-		i++;
+	/* Allocate buffer for PV list */
+	path = malloc(sizeof(lock_pvs->path) * allocated);
+	if (!path) {
+		log_error("%s Fail to allocate PV list", __func__);
+		return;
 	}
 
-	lock_pvs->path_num = i;
+	memset(lock_pvs, 0x0, sizeof(*lock_pvs));
+	lock_pvs->path = path;
+
+	dm_list_iterate_items(pvl, &vg->pvs) {
+		/* Check if out of boundary */
+		if (lock_pvs->num >= allocated) {
+			allocated += 16;
+			path = realloc(lock_pvs->path,
+				       sizeof(lock_pvs->path) * allocated);
+			if (!path) {
+				log_error("%s Fail to allocate PV list", __func__);
+				goto fail;
+			}
+			lock_pvs->path = path;
+		}
+
+		lock_pvs->path[lock_pvs->num] = strdup(pv_dev_name(pvl->pv));
+		log_debug("%s VG %s find PV device %s", __func__,
+			  vg->name, lock_pvs->path[lock_pvs->num]);
+		lock_pvs->num++;
+	}
+	return;
+
+fail:
+	for (i = 0; i < lock_pvs->num; i++) {
+		free(lock_pvs->path[i]);
+		lock_pvs->path[i] = NULL;
+	}
+	free(lock_pvs->path);
+	lock_pvs->path = NULL;
+	lock_pvs->num = 0;
 	return;
 }
 
-static void _retrive_lv_pv_list(struct volume_group *vg,
-				const char *lv_name,
-				struct lvmlockd_pvs *lock_pvs)
+static void _lockd_retrive_lv_pv_list(struct volume_group *vg,
+				      const char *lv_name,
+				      struct lvmlockd_pvs *lock_pvs)
 {
 	struct pv_list *pvl;
 	struct physical_volume *pv;
 	const struct pv_segment *pvseg;
-	int i, found = 0;
 	char *lv_name_prefix;
+	char **path;
+	int allocated = 16, i;
+	int found;
 
-	i = 0;
+	/* Allocate buffer for PV list */
+	path = malloc(sizeof(lock_pvs->path) * allocated);
+	if (!path) {
+		log_error("%s Fail to allocate PV list", __func__);
+		return;
+	}
+
+	memset(lock_pvs, 0x0, sizeof(*lock_pvs));
+	lock_pvs->path = path;
 
 	/* Allocate buffer for 'lv_name' + '_' + '\0' */
 	lv_name_prefix = malloc(strlen(lv_name) + 1 + 1);
-
 	snprintf(lv_name_prefix, strlen(lv_name) + 1 + 1,
 		 "%s_", lv_name);
 
-	log_debug("%s lv_name=%s lv_name_prefix=%s", __func__,
-		  lv_name, lv_name_prefix);
+	log_debug("%s VG %s LV %s", __func__, vg->name, lv_name);
 
 	dm_list_iterate_items(pvl, &vg->pvs) {
-
 		/* Check if out of boundary */
-		if (i >= LVMLOCKD_PV_MAX_NUM)
-			break;
+		if (lock_pvs->num >= allocated) {
+			allocated += 16;
+			path = realloc(lock_pvs->path,
+				       sizeof(lock_pvs->path) * allocated);
+			if (!path) {
+				log_error("%s Fail to allocate PV list", __func__);
+				goto fail;
+			}
+			lock_pvs->path = path;
+		}
 
 		pv = pvl->pv;
 
@@ -279,14 +330,13 @@ static void _retrive_lv_pv_list(struct volume_group *vg,
 		}
 
 		if (found) {
-			log_debug("%s [LV] find PV device=%s", __func__,
-				  pv_dev_name(pv));
-			lock_pvs->path[i] = strdup(pv_dev_name(pv));
-			i++;
+			lock_pvs->path[lock_pvs->num] = strdup(pv_dev_name(pv));
+			log_debug("%s VG %s LV %s find PV device %s", __func__,
+				  vg->name, lv_name,
+				  lock_pvs->path[lock_pvs->num]);
+			lock_pvs->num++;
 		}
 	}
-
-	lock_pvs->path_num = i;
 
 	/*
 	 * Fixup for 'lvcreate --type error -L1 -n $lv1 $vg', in this
@@ -295,67 +345,37 @@ static void _retrive_lv_pv_list(struct volume_group *vg,
 	 *
 	 * So create drive path list with all drives in the VG.
 	 */
-	if (!lock_pvs->path_num) {
+	if (!lock_pvs->num)
+		_lockd_retrive_vg_pv_list(vg, lock_pvs);
 
-		i = 0;
-		dm_list_iterate_items(pvl, &vg->pvs) {
+	free(lv_name_prefix);
+	return;
 
-			/* Check if out of boundary */
-			if (i >= LVMLOCKD_PV_MAX_NUM)
-				break;
-
-			pv = pvl->pv;
-			lock_pvs->path[i] = strdup(pv_dev_name(pv));
-			i++;
-		}
+fail:
+	for (i = 0; i < lock_pvs->num; i++) {
+		free(lock_pvs->path[i]);
+		lock_pvs->path[i] = NULL;
 	}
-
+	free(lock_pvs->path);
+	lock_pvs->path = NULL;
+	lock_pvs->num = 0;
 	free(lv_name_prefix);
 	return;
 }
 
-static void _free_pv_list(struct lvmlockd_pvs *lock_pvs)
+static void _lockd_free_pv_list(struct lvmlockd_pvs *lock_pvs)
 {
 	int i;
 
-	for (i = 0; i < lock_pvs->path_num; i++)
+	for (i = 0; i < lock_pvs->num; i++) {
 		free(lock_pvs->path[i]);
-}
+		lock_pvs->path[i] = NULL;
+	}
 
-#define SEND_PVS_MESSAGE(pvs) 						\
-	"path_num = " FMTd64, (int64_t)(pvs)->path_num,			\
-	"path[0]  = %s", (pvs)->path[0]  ? (pvs)->path[0]  : "none",	\
-	"path[1]  = %s", (pvs)->path[1]  ? (pvs)->path[1]  : "none",	\
-	"path[2]  = %s", (pvs)->path[2]  ? (pvs)->path[2]  : "none",	\
-	"path[3]  = %s", (pvs)->path[3]  ? (pvs)->path[3]  : "none",	\
-	"path[4]  = %s", (pvs)->path[4]  ? (pvs)->path[4]  : "none",	\
-	"path[5]  = %s", (pvs)->path[5]  ? (pvs)->path[5]  : "none",	\
-	"path[6]  = %s", (pvs)->path[6]  ? (pvs)->path[6]  : "none",	\
-	"path[7]  = %s", (pvs)->path[7]  ? (pvs)->path[7]  : "none",	\
-	"path[8]  = %s", (pvs)->path[8]  ? (pvs)->path[8]  : "none",	\
-	"path[9]  = %s", (pvs)->path[9]  ? (pvs)->path[9]  : "none",	\
-	"path[10] = %s", (pvs)->path[10] ? (pvs)->path[10] : "none",	\
-	"path[11] = %s", (pvs)->path[11] ? (pvs)->path[11] : "none",	\
-	"path[12] = %s", (pvs)->path[12] ? (pvs)->path[12] : "none",	\
-	"path[13] = %s", (pvs)->path[13] ? (pvs)->path[13] : "none",	\
-	"path[14] = %s", (pvs)->path[14] ? (pvs)->path[14] : "none",	\
-	"path[15] = %s", (pvs)->path[15] ? (pvs)->path[15] : "none",	\
-	"path[16] = %s", (pvs)->path[16] ? (pvs)->path[16] : "none",	\
-	"path[17] = %s", (pvs)->path[17] ? (pvs)->path[17] : "none",	\
-	"path[18] = %s", (pvs)->path[18] ? (pvs)->path[18] : "none",	\
-	"path[19] = %s", (pvs)->path[19] ? (pvs)->path[19] : "none",	\
-	"path[20] = %s", (pvs)->path[20] ? (pvs)->path[20] : "none",	\
-	"path[21] = %s", (pvs)->path[21] ? (pvs)->path[21] : "none",	\
-	"path[22] = %s", (pvs)->path[22] ? (pvs)->path[22] : "none",	\
-	"path[23] = %s", (pvs)->path[23] ? (pvs)->path[23] : "none",	\
-	"path[24] = %s", (pvs)->path[24] ? (pvs)->path[24] : "none",	\
-	"path[25] = %s", (pvs)->path[25] ? (pvs)->path[25] : "none",	\
-	"path[26] = %s", (pvs)->path[26] ? (pvs)->path[26] : "none",	\
-	"path[27] = %s", (pvs)->path[27] ? (pvs)->path[27] : "none",	\
-	"path[28] = %s", (pvs)->path[28] ? (pvs)->path[28] : "none",	\
-	"path[29] = %s", (pvs)->path[29] ? (pvs)->path[29] : "none",	\
-	"path[30] = %s", (pvs)->path[30] ? (pvs)->path[30] : "none",	\
-	"path[31] = %s", (pvs)->path[31] ? (pvs)->path[31] : "none"
+	free(lock_pvs->path);
+	lock_pvs->path = NULL;
+	lock_pvs->num = 0;
+}
 
 /*
  * result/lockd_flags are values returned from lvmlockd.
@@ -412,8 +432,16 @@ static int _lockd_request(struct cmd_context *cmd,
 		cmd_name = "none";
 
 	if (vg_name && lv_name) {
+		/*
+		 * For LV operation, the PV list must be passed for idm,
+		 * otherwise, IDM lock manager has no idea to send locking
+		 * request to which drives, so return failure.
+		 */
+		if (!lock_pvs)
+			return 1;
 
 		reply = _lockd_send(req_name,
+					lock_pvs,
 					"cmd = %s", cmd_name,
 					"pid = " FMTd64, (int64_t) pid,
 					"mode = %s", mode,
@@ -424,7 +452,6 @@ static int _lockd_request(struct cmd_context *cmd,
 					"vg_lock_type = %s", vg_lock_type ?: "none",
 					"vg_lock_args = %s", vg_lock_args ?: "none",
 					"lv_lock_args = %s", lv_lock_args ?: "none",
-					SEND_PVS_MESSAGE(lock_pvs),
 					NULL);
 
 		if (!_lockd_result(reply, result, lockd_flags))
@@ -435,6 +462,7 @@ static int _lockd_request(struct cmd_context *cmd,
 
 	} else if (vg_name) {
 		reply = _lockd_send(req_name,
+					lock_pvs,
 					"cmd = %s", cmd_name,
 					"pid = " FMTd64, (int64_t) pid,
 					"mode = %s", mode,
@@ -452,6 +480,7 @@ static int _lockd_request(struct cmd_context *cmd,
 
 	} else {
 		reply = _lockd_send(req_name,
+					lock_pvs,
 					"cmd = %s", cmd_name,
 					"pid = " FMTd64, (int64_t) pid,
 					"mode = %s", mode,
@@ -635,6 +664,7 @@ int handle_sanlock_lv(struct cmd_context *cmd, struct volume_group *vg)
 	 * Ask lvmlockd/sanlock to look for an unused lock.
 	 */
 	reply = _lockd_send("find_free_lock",
+			NULL,
 			"pid = " FMTd64, (int64_t) getpid(),
 			"vg_name = %s", vg->name,
 			NULL);
@@ -674,7 +704,8 @@ static int _deactivate_sanlock_lv(struct cmd_context *cmd, struct volume_group *
 	return 1;
 }
 
-static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+static int _init_vg(struct cmd_context *cmd, struct volume_group *vg,
+		    const char *lock_type)
 {
 	daemon_reply reply;
 	const char *reply_str;
@@ -688,9 +719,10 @@ static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 		return 0;
 
 	reply = _lockd_send("init_vg",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
-				"vg_lock_type = %s", "dlm",
+				"vg_lock_type = %s", lock_type,
 				NULL);
 
 	if (!_lockd_result(reply, &result, NULL)) {
@@ -710,10 +742,12 @@ static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 		log_error("VG %s init failed: invalid parameters for dlm", vg->name);
 		break;
 	case -EMANAGER:
-		log_error("VG %s init failed: lock manager dlm is not running", vg->name);
+		log_error("VG %s init failed: lock manager %s is not running",
+			  vg->name, lock_type);
 		break;
 	case -EPROTONOSUPPORT:
-		log_error("VG %s init failed: lock manager dlm is not supported by lvmlockd", vg->name);
+		log_error("VG %s init failed: lock manager %s is not supported by lvmlockd",
+			  vg->name, lock_type);
 		break;
 	case -EEXIST:
 		log_error("VG %s init failed: a lockspace with the same name exists", vg->name);
@@ -737,7 +771,7 @@ static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 		goto out;
 	}
 
-	vg->lock_type = "dlm";
+	vg->lock_type = lock_type;
 	vg->lock_args = vg_lock_args;
 
 	if (!vg_write(vg) || !vg_commit(vg)) {
@@ -752,82 +786,14 @@ out:
 	return ret;
 }
 
+static int _init_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	return _init_vg(cmd, vg, "dlm");
+}
+
 static int _init_vg_idm(struct cmd_context *cmd, struct volume_group *vg)
 {
-	daemon_reply reply;
-	const char *reply_str;
-	const char *vg_lock_args = NULL;
-	int result;
-	int ret;
-
-	if (!_use_lvmlockd)
-		return 0;
-	if (!_lvmlockd_connected)
-		return 0;
-
-	reply = _lockd_send("init_vg",
-				"pid = " FMTd64, (int64_t) getpid(),
-				"vg_name = %s", vg->name,
-				"vg_lock_type = %s", "idm",
-				NULL);
-
-	if (!_lockd_result(reply, &result, NULL)) {
-		ret = 0;
-		result = -ELOCKD;
-	} else {
-		ret = (result < 0) ? 0 : 1;
-	}
-
-	switch (result) {
-	case 0:
-		break;
-	case -ELOCKD:
-		log_error("VG %s init failed: lvmlockd not available", vg->name);
-		break;
-	case -EARGS:
-		log_error("VG %s init failed: invalid parameters for idm", vg->name);
-		break;
-	case -EMANAGER:
-		log_error("VG %s init failed: lock manager idm is not running", vg->name);
-		break;
-	case -EPROTONOSUPPORT:
-		log_error("VG %s init failed: lock manager idm is not supported by lvmlockd", vg->name);
-		break;
-	case -EEXIST:
-		log_error("VG %s init failed: a lockspace with the same name exists", vg->name);
-		break;
-	default:
-		log_error("VG %s init failed: %d", vg->name, result);
-	}
-
-	if (!ret)
-		goto out;
-
-	if (!(reply_str = daemon_reply_str(reply, "vg_lock_args", NULL))) {
-		log_error("VG %s init failed: lock_args not returned", vg->name);
-		ret = 0;
-		goto out;
-	}
-
-	if (!(vg_lock_args = dm_pool_strdup(cmd->mem, reply_str))) {
-		log_error("VG %s init failed: lock_args alloc failed", vg->name);
-		ret = 0;
-		goto out;
-	}
-
-	vg->lock_type = "idm";
-	vg->lock_args = vg_lock_args;
-
-	if (!vg_write(vg) || !vg_commit(vg)) {
-		log_error("VG %s init failed: vg_write vg_commit", vg->name);
-		ret = 0;
-		goto out;
-	}
-
-	ret = 1;
-out:
-	daemon_reply_destroy(reply);
-	return ret;
+	return _init_vg(cmd, vg, "idm");
 }
 
 static int _init_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg, int lv_lock_count)
@@ -883,6 +849,7 @@ static int _init_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg, in
 	 */
 
 	reply = _lockd_send("init_vg",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", "sanlock",
@@ -973,7 +940,7 @@ out:
 
 /* called after vg_remove on disk */
 
-static int _free_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+static int _free_vg(struct cmd_context *cmd, struct volume_group *vg)
 {
 	daemon_reply reply;
 	uint32_t lockd_flags = 0;
@@ -986,6 +953,7 @@ static int _free_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 		return 0;
 
 	reply = _lockd_send("free_vg",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", vg->lock_type,
@@ -999,16 +967,27 @@ static int _free_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	if (!ret)
-		log_error("_free_vg_dlm lvmlockd result %d", result);
+		log_error("%s: lock type %s lvmlockd result %d",
+			  __func__, vg->lock_type, result);
 
 	daemon_reply_destroy(reply);
 
 	return 1;
 }
 
+static int _free_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	return _free_vg(cmd, vg);
+}
+
+static int _free_vg_idm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	return _free_vg(cmd, vg);
+}
+
 /* called before vg_remove on disk */
 
-static int _busy_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+static int _busy_vg(struct cmd_context *cmd, struct volume_group *vg)
 {
 	daemon_reply reply;
 	uint32_t lockd_flags = 0;
@@ -1025,6 +1004,7 @@ static int _busy_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 	 */
 
 	reply = _lockd_send("busy_vg",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", vg->lock_type,
@@ -1043,11 +1023,22 @@ static int _busy_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	if (!ret)
-		log_error("_busy_vg_dlm lvmlockd result %d", result);
+		log_error("%s: lock type %s lvmlockd result %d", __func__,
+			  vg->lock_type, result);
 
  out:
 	daemon_reply_destroy(reply);
 	return ret;
+}
+
+static int _busy_vg_dlm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	return _busy_vg(cmd, vg);
+}
+
+static int _busy_vg_idm(struct cmd_context *cmd, struct volume_group *vg)
+{
+	return _busy_vg(cmd, vg);
 }
 
 /* called before vg_remove on disk */
@@ -1084,6 +1075,7 @@ static int _free_vg_sanlock(struct cmd_context *cmd, struct volume_group *vg)
 	}
 
 	reply = _lockd_send("free_vg",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", vg->lock_type,
@@ -1151,12 +1143,12 @@ int lockd_init_vg(struct cmd_context *cmd, struct volume_group *vg,
 		return 1;
 	case LOCK_TYPE_CLVM:
 		return 1;
-	case LOCK_TYPE_IDM:
-		return _init_vg_idm(cmd, vg);
 	case LOCK_TYPE_DLM:
 		return _init_vg_dlm(cmd, vg);
 	case LOCK_TYPE_SANLOCK:
 		return _init_vg_sanlock(cmd, vg, lv_lock_count);
+	case LOCK_TYPE_IDM:
+		return _init_vg_idm(cmd, vg);
 	default:
 		log_error("Unknown lock_type.");
 		return 0;
@@ -1210,13 +1202,15 @@ int lockd_free_vg_before(struct cmd_context *cmd, struct volume_group *vg,
 	case LOCK_TYPE_NONE:
 	case LOCK_TYPE_CLVM:
 		return 1;
-	case LOCK_TYPE_IDM:
 	case LOCK_TYPE_DLM:
 		/* returning an error will prevent vg_remove() */
 		return _busy_vg_dlm(cmd, vg);
 	case LOCK_TYPE_SANLOCK:
 		/* returning an error will prevent vg_remove() */
 		return _free_vg_sanlock(cmd, vg);
+	case LOCK_TYPE_IDM:
+		/* returning an error will prevent vg_remove() */
+		return _busy_vg_idm(cmd, vg);
 	default:
 		log_error("Unknown lock_type.");
 		return 0;
@@ -1230,11 +1224,13 @@ void lockd_free_vg_final(struct cmd_context *cmd, struct volume_group *vg)
 	switch (get_lock_type_from_string(vg->lock_type)) {
 	case LOCK_TYPE_NONE:
 	case LOCK_TYPE_CLVM:
-	case LOCK_TYPE_IDM:
 	case LOCK_TYPE_SANLOCK:
 		break;
 	case LOCK_TYPE_DLM:
 		_free_vg_dlm(cmd, vg);
+		break;
+	case LOCK_TYPE_IDM:
+		_free_vg_idm(cmd, vg);
 		break;
 	default:
 		log_error("Unknown lock_type.");
@@ -1303,10 +1299,15 @@ int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_i
 		host_id = find_config_tree_int(cmd, local_host_id_CFG, NULL);
 	}
 
-	memset(&lock_pvs, 0x0, sizeof(struct lvmlockd_pvs));
-	_retrive_vg_pv_list(vg, &lock_pvs);
+	/*
+	 * Create the VG's PV list when start the VG, the PV list
+	 * is passed to lvmlockd, and the the PVs path will be used
+	 * to send SCSI commands for idm locking scheme.
+	 */
+	_lockd_retrive_vg_pv_list(vg, &lock_pvs);
 
 	reply = _lockd_send("start_vg",
+				&lock_pvs,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", vg->lock_type,
@@ -1315,10 +1316,9 @@ int lockd_start_vg(struct cmd_context *cmd, struct volume_group *vg, int start_i
 				"version = " FMTd64, (int64_t) vg->seqno,
 				"host_id = " FMTd64, (int64_t) host_id,
 				"opts = %s", start_init ? "start_init" : "none",
-				SEND_PVS_MESSAGE(&lock_pvs),
 				NULL);
 
-	_free_pv_list(&lock_pvs);
+	_lockd_free_pv_list(&lock_pvs);
 
 	if (!_lockd_result(reply, &result, &lockd_flags)) {
 		ret = 0;
@@ -1385,6 +1385,7 @@ int lockd_stop_vg(struct cmd_context *cmd, struct volume_group *vg)
 		  vg->name, vg->lock_type ? vg->lock_type : "empty");
 
 	reply = _lockd_send("stop_vg",
+			NULL,
 			"pid = " FMTd64, (int64_t) getpid(),
 			"vg_name = %s", vg->name,
 			NULL);
@@ -1432,6 +1433,7 @@ int lockd_start_wait(struct cmd_context *cmd)
 		return 0;
 
 	reply = _lockd_send("start_wait",
+			NULL,
 			"pid = " FMTd64, (int64_t) getpid(),
 			NULL);
 
@@ -2267,6 +2269,7 @@ int lockd_vg_update(struct volume_group *vg)
 		return 0;
 
 	reply = _lockd_send("vg_update",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"version = " FMTd64, (int64_t) vg->seqno,
@@ -2343,21 +2346,19 @@ int lockd_lv_name(struct cmd_context *cmd, struct volume_group *vg,
  retry:
 	log_debug("lockd LV %s/%s mode %s uuid %s", vg->name, lv_name, mode, lv_uuid);
 
-	memset(&lock_pvs, 0x0, sizeof(struct lvmlockd_pvs));
-
-	_retrive_lv_pv_list(vg, lv_name, &lock_pvs);
+	_lockd_retrive_lv_pv_list(vg, lv_name, &lock_pvs);
 
 	if (!_lockd_request(cmd, "lock_lv",
 			       vg->name, vg->lock_type, vg->lock_args,
 			       lv_name, lv_uuid, lock_args, mode, opts,
 			       &lock_pvs, &result, &lockd_flags)) {
-		_free_pv_list(&lock_pvs);
+		_lockd_free_pv_list(&lock_pvs);
 		/* No result from lvmlockd, it is probably not running. */
 		log_error("Locking failed for LV %s/%s", vg->name, lv_name);
 		return 0;
 	}
 
-	_free_pv_list(&lock_pvs);
+	_lockd_free_pv_list(&lock_pvs);
 
 	/* The lv was not active/locked. */
 	if (result == -ENOENT && !strcmp(mode, "un"))
@@ -2547,6 +2548,7 @@ static int _init_lv_sanlock(struct cmd_context *cmd, struct volume_group *vg,
 		return_0;
 
 	reply = _lockd_send("init_lv",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"lv_name = %s", lv_name,
@@ -2614,6 +2616,7 @@ static int _free_lv(struct cmd_context *cmd, struct volume_group *vg,
 		return_0;
 
 	reply = _lockd_send("free_lv",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"lv_name = %s", lv_name,
@@ -2850,6 +2853,7 @@ int lockd_rename_vg_before(struct cmd_context *cmd, struct volume_group *vg)
 	 */
 
 	reply = _lockd_send("rename_vg_before",
+			NULL,
 			"pid = " FMTd64, (int64_t) getpid(),
 			"vg_name = %s", vg->name,
 			"vg_lock_type = %s", vg->lock_type,
@@ -2915,6 +2919,7 @@ int lockd_rename_vg_final(struct cmd_context *cmd, struct volume_group *vg, int 
 		 * with the new VG (lockspace) name.
 		 */
 		reply = _lockd_send("rename_vg_final",
+				NULL,
 				"pid = " FMTd64, (int64_t) getpid(),
 				"vg_name = %s", vg->name,
 				"vg_lock_type = %s", vg->lock_type,
@@ -2959,6 +2964,7 @@ const char *lockd_running_lock_type(struct cmd_context *cmd, int *found_multiple
 		return NULL;
 
 	reply = _lockd_send("running_lm",
+			NULL,
 			"pid = " FMTd64, (int64_t) getpid(),
 			NULL);
 
